@@ -27,8 +27,8 @@ type Config struct {
 	ScanDepth      int      `json:"scan_depth"`
 	CronSchedule   string   `json:"cron_schedule"`
 	Timezone       string   `json:"timezone"`
-	RunOnStart     bool     `json:"run_on_start"`
-	AutoUpdate     bool     `json:"auto_update"`
+	RunOnStart     *bool    `json:"run_on_start,omitempty"`
+	AutoUpdate     *bool    `json:"auto_update,omitempty"`
 	CommandTimeout string   `json:"command_timeout"`
 	// DisabledProjects maps an absolute compose file path to true when the user
 	// has excluded it from automatic updates via the web UI.
@@ -38,54 +38,27 @@ type Config struct {
 	path string
 }
 
+// boolPtr returns a pointer to v, for constructing Config values in tests.
+func boolPtr(v bool) *bool { return &v }
+
+// RunOnStartEnabled reports the effective run-on-start setting (default true).
+func (c *Config) RunOnStartEnabled() bool { return c.RunOnStart == nil || *c.RunOnStart }
+
+// AutoUpdateEnabled reports the effective auto-update setting (default true).
+func (c *Config) AutoUpdateEnabled() bool { return c.AutoUpdate == nil || *c.AutoUpdate }
+
 // loadConfig builds the effective configuration. Values come from, in order of
 // precedence: the JSON file (if present), then environment variables, then
 // built-in defaults. The returned Config remembers its path for saving.
+// loadConfig builds the effective configuration. All updater settings live in
+// the JSON file (CONFIG_FILE, default /config/updater.json). Only bootstrap
+// parameters that cannot live inside that file come from the environment:
+// CONFIG_FILE (its own location) and WEB_ADDR (handled in main).
 func loadConfig() (*Config, error) {
 	path := env("CONFIG_FILE", "/config/updater.json")
 
-	cfg := &Config{
-		ScanDepth:      5,
-		CronSchedule:   "0 */6 * * *",
-		Timezone:       "Asia/Shanghai",
-		RunOnStart:     true,
-		AutoUpdate:     true,
-		CommandTimeout: "30m",
-		path:           path,
-	}
+	cfg := &Config{path: path}
 
-	// Seed from environment first (used when no file exists yet).
-	if v := strings.TrimSpace(os.Getenv("INCLUDE_DIRS")); v != "" {
-		cfg.IncludeDirs = splitList(v)
-	} else if v := strings.TrimSpace(os.Getenv("SCAN_PATHS")); v != "" {
-		cfg.IncludeDirs = splitList(v)
-	} else {
-		cfg.IncludeDirs = []string{"/stacks"}
-	}
-	cfg.ExcludeDirs = splitList(os.Getenv("EXCLUDE_DIRS"))
-	if v := os.Getenv("SCAN_DEPTH"); v != "" {
-		var d int
-		if _, err := fmt.Sscanf(v, "%d", &d); err == nil && d >= 0 {
-			cfg.ScanDepth = d
-		}
-	}
-	if v := strings.TrimSpace(os.Getenv("CRON_SCHEDULE")); v != "" {
-		cfg.CronSchedule = v
-	}
-	if v := strings.TrimSpace(os.Getenv("TZ")); v != "" {
-		cfg.Timezone = v
-	}
-	if v := strings.TrimSpace(os.Getenv("RUN_ON_START")); v != "" {
-		cfg.RunOnStart = strings.EqualFold(v, "true")
-	}
-	if v := strings.TrimSpace(os.Getenv("AUTO_UPDATE")); v != "" {
-		cfg.AutoUpdate = strings.EqualFold(v, "true")
-	}
-	if v := strings.TrimSpace(os.Getenv("COMMAND_TIMEOUT")); v != "" {
-		cfg.CommandTimeout = v
-	}
-
-	// The file, when present, overrides the environment-derived defaults.
 	data, err := os.ReadFile(path)
 	if err == nil {
 		if err := json.Unmarshal(data, cfg); err != nil {

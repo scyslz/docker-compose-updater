@@ -4,21 +4,16 @@ A small containerized Go utility that scans configured directory trees for Docke
 
 ## Quick start
 
-Edit `compose.yaml` and set `INCLUDE_DIRS` and `EXCLUDE_DIRS`. Paths are paths **inside the updater container**. Mount each included host directory at the same absolute path inside the container so Compose relative paths and `.env` files resolve as expected.
+1. Mount each host directory you want scanned at the **same absolute path** inside the container (so Compose relative paths and `.env` files resolve as expected), and mount a host dir to `/config`.
+2. Optionally seed the config by copying `config.example.json` to `./config/updater.json` and adjusting the paths. You can also start with an empty `./config` and configure everything in the web UI.
+3. Start the container and open the web UI to set scan dirs, schedule, and per-project toggles.
 
 ```yaml
-environment:
-  TZ: Asia/Shanghai
-  WEB_ADDR: ":8080"
-  CONFIG_FILE: /config/updater.json
-  INCLUDE_DIRS: /data/docker,/opt/stacks
-  EXCLUDE_DIRS: /data/docker/archive,/opt/stacks/manual
-  SCAN_DEPTH: "5"
-  CRON_SCHEDULE: "0 */6 * * *"
-  RUN_ON_START: "true"
-  AUTO_UPDATE: "true"
 ports:
   - "8080:8080"
+environment:
+  WEB_ADDR: ":8080"
+  CONFIG_FILE: /config/updater.json
 volumes:
   - /var/run/docker.sock:/var/run/docker.sock
   - ./config:/config
@@ -54,15 +49,13 @@ COMPOSE_AUTO_UPDATER_IMAGE=ghcr.io/scyslz/docker-compose-updater:latest
 
 ## Environment variables
 
-- `INCLUDE_DIRS`: comma- or semicolon-separated scan roots inside the container. Default `/stacks` if not set. Every root must be mounted into the container. `SCAN_PATHS` is supported as a backward-compatible alias when `INCLUDE_DIRS` is unset.
-- `EXCLUDE_DIRS`: comma- or semicolon-separated directory paths to skip. Exclusions apply to the directory itself and all descendants. Paths are inside the container.
-- `SCAN_DEPTH`: maximum directory depth below each include root; default `5`. Set `0` to inspect only files directly in each root.
-- `CRON_SCHEDULE`: standard five-field Unix cron expression (`minute hour day-of-month month day-of-week`); default `0 */6 * * *` (every 6 hours at minute 0, in `TZ`). Supports lists, ranges, steps, and month/day names, e.g. `*/15 * * * *`, `0 3 * * 1-5`, or `0 */6 * * *`.
-- `TZ`: timezone used for scheduling; default `Asia/Shanghai`.
-- `RUN_ON_START`: run a scan immediately after startup; default `true`.
-- `AUTO_UPDATE`: `true` pulls and recreates eligible services; `false` only pulls. Default `true`.
-- `COMMAND_TIMEOUT`: timeout per Docker command; default `30m`.
+Only bootstrap settings are read from the environment; all updater settings live in the [configuration file](#configuration-file) and are edited through the web UI.
+
+- `CONFIG_FILE`: path to the JSON configuration file; default `/config/updater.json`.
+- `WEB_ADDR`: web UI listen address; default `:8080`. Set to `off` to disable the UI.
 - `PREFER_COMPOSE`: force a Compose implementation. Unset (default) auto-detects `docker compose` (v2) first, then falls back to `docker-compose` (v1). Set to `v2` or `v1` to force one.
+
+The following settings are configured in the file / web UI (not via environment), with these defaults: scan roots `/stacks`, depth `5`, cron `0 */6 * * *`, timezone `Asia/Shanghai`, `run_on_start` and `auto_update` both `true`, command timeout `30m`, and no exclusions.
 
 ## Web management UI
 

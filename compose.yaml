@@ -6,30 +6,20 @@ services:
     container_name: compose-auto-updater
     restart: unless-stopped
     ports:
-      # Web management UI. Change or remove to disable exposure.
+      # Web management UI.
       - "8080:8080"
     environment:
-      TZ: Asia/Shanghai
-      # Web UI listen address; set to "off" to disable the UI entirely.
+      # Bootstrap settings only. Everything else (scan dirs, cron, toggles…) is
+      # edited in the web UI and stored in the config file below.
+      # Set WEB_ADDR to "off" to disable the UI.
       WEB_ADDR: ":8080"
-      # Where the editable config is stored (mounted below). Environment values
-      # below are only defaults used before the config file exists; once the web
-      # UI saves a config, that file wins.
       CONFIG_FILE: /config/updater.json
-      # Comma- or semicolon-separated paths, inside the container.
-      INCLUDE_DIRS: /data/docker,/opt/stacks
-      EXCLUDE_DIRS: /data/docker/compose-auto-updater,/opt/stacks/manual
-      SCAN_DEPTH: "5"
-      # Standard five-field cron expression: minute hour day-of-month month day-of-week.
-      # Default checks every 6 hours.
-      CRON_SCHEDULE: "0 */6 * * *"
-      RUN_ON_START: "true"
-      AUTO_UPDATE: "true"
-      COMMAND_TIMEOUT: 30m
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      # Persistent, web-editable configuration.
+      # Persistent, web-editable configuration. Copy config.example.json here
+      # as updater.json to seed the initial values.
       - ./config:/config
-      # Mount each host directory at the exact same absolute path used by INCLUDE_DIRS.
+      # Mount each host directory at the exact same absolute path used for the
+      # include dirs you configure in the UI.
       - /data/docker:/data/docker:rw
       - /opt/stacks:/opt/stacks:rw

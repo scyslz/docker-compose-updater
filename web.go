@@ -129,8 +129,8 @@ func (u *updater) state() webState {
 		ScanDepth:      u.cfg.ScanDepth,
 		CronSchedule:   u.cfg.CronSchedule,
 		Timezone:       u.cfg.Timezone,
-		RunOnStart:     u.cfg.RunOnStart,
-		AutoUpdate:     u.cfg.AutoUpdate,
+		RunOnStart:     u.cfg.RunOnStartEnabled(),
+		AutoUpdate:     u.cfg.AutoUpdateEnabled(),
 		CommandTimeout: u.cfg.CommandTimeout,
 	}
 	disabled := map[string]bool{}
@@ -186,8 +186,8 @@ func (u *updater) applyConfig(wc webConfig) error {
 	u.cfg.ScanDepth = wc.ScanDepth
 	u.cfg.CronSchedule = wc.CronSchedule
 	u.cfg.Timezone = wc.Timezone
-	u.cfg.RunOnStart = wc.RunOnStart
-	u.cfg.AutoUpdate = wc.AutoUpdate
+	u.cfg.RunOnStart = boolPtr(wc.RunOnStart)
+	u.cfg.AutoUpdate = boolPtr(wc.AutoUpdate)
 	u.cfg.CommandTimeout = wc.CommandTimeout
 	u.cfg.mu.Unlock()
 

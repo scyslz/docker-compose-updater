@@ -139,12 +139,12 @@ func main() {
 	}
 	u := &updater{cfg: cfg, compose: cc}
 	log.Printf("compose-auto-updater started; compose=%s wait=%t include_dirs=%v exclude_dirs=%v depth=%d auto_update=%t cron=%q tz=%s config=%s",
-		cc.display, cc.supports, cfg.IncludeDirs, cfg.ExcludeDirs, cfg.ScanDepth, cfg.AutoUpdate, cfg.CronSchedule, cfg.Timezone, cfg.path)
+		cc.display, cc.supports, cfg.IncludeDirs, cfg.ExcludeDirs, cfg.ScanDepth, cfg.AutoUpdateEnabled(), cfg.CronSchedule, cfg.Timezone, cfg.path)
 
 	// Optional web management UI; disabled with WEB_ADDR=off.
 	go startWeb(u, env("WEB_ADDR", ":8080"))
 
-	if cfg.RunOnStart {
+	if cfg.RunOnStartEnabled() {
 		go u.run()
 	}
 
@@ -327,7 +327,7 @@ func (u *updater) timeout() time.Duration {
 // but still respects build-only services.
 func (u *updater) processProject(file string) projectResult {
 	u.cfg.mu.Lock()
-	autoUpdate := u.cfg.AutoUpdate
+	autoUpdate := u.cfg.AutoUpdateEnabled()
 	u.cfg.mu.Unlock()
 	enabled := u.cfg.ProjectEnabled(file)
 	return u.process(file, enabled, autoUpdate)

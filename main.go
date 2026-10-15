@@ -406,9 +406,34 @@ func (u *updater) runDocker(parent context.Context, dir string, args []string) (
 	return u.runCmd(parent, dir, argv)
 }
 
+// hasBuild reports whether a compose service defines a build section. It
+// accepts the value exactly as emitted by `docker compose config --format json`,
+// where a build is an object (possibly empty) or a non-empty string, and "no
+// build" is null/absent. Explicit JSON handling avoids false negatives when the
+// build section is an object like {"context":"."}.
 func hasBuild(raw json.RawMessage) bool {
 	v := strings.TrimSpace(string(raw))
-	return v != "" && v != "null" && v != `""` && v != "{}"
+	if v == "" || v == "null" {
+		return false
+	}
+	// Non-empty string form (e.g. "." or "./dir") means a build.
+	if len(v) > 0 && v[0] == '"' {
+		var s string
+		if json.Unmarshal(raw, &s) == nil {
+			return strings.TrimSpace(s) != ""
+		}
+		return true
+	}
+	// Object form: any non-empty object means a build.
+	if v[0] == '{' {
+		var obj map[string]any
+		if json.Unmarshal(raw, &obj) == nil {
+			return len(obj) > 0
+		}
+		return true
+	}
+	// Any other non-null JSON value is treated conservatively as a build.
+	return true
 }
 
 func (u *updater) runCmd(parent context.Context, dir string, argv []string) ([]byte, error) {

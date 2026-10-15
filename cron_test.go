@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -84,5 +85,26 @@ func TestNormalizeImageID(t *testing.T) {
 	}
 	if got := normalizeImageID("abc"); got != "abc" {
 		t.Fatalf("normalizeImageID = %q, want abc", got)
+	}
+}
+
+func TestHasBuild(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want bool
+	}{
+		{``, false},
+		{`null`, false},
+		{`""`, false},
+		{`{}`, false},
+		{`{"context":"."}`, true},
+		{`{"context":".","dockerfile":"Dockerfile"}`, true},
+		{`"."`, true},
+		{`"./dir"`, true},
+	}
+	for _, c := range cases {
+		if got := hasBuild(json.RawMessage(c.raw)); got != c.want {
+			t.Errorf("hasBuild(%q) = %v, want %v", c.raw, got, c.want)
+		}
 	}
 }

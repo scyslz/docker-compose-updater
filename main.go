@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -28,12 +29,26 @@ type composeConfig struct {
 }
 
 type updater struct {
-	roots      []string
-	excludes   []string
-	depth      int
-	autoUpdate bool
-	timeout    time.Duration
-	compose    composeCommand
+	cfg     *Config
+	compose composeCommand
+
+	mu          sync.Mutex
+	running     bool
+	lastRun     time.Time
+	nextRun     time.Time
+	lastResults []projectResult
+}
+
+// projectResult is the outcome of processing one compose file, surfaced to the
+// web UI.
+type projectResult struct {
+	File     string   `json:"file"`
+	Enabled  bool     `json:"enabled"`
+	Status   string   `json:"status"` // updated, unchanged, skipped, failed
+	Detail   string   `json:"detail"`
+	Services []string `json:"services,omitempty"`
+	Updated  []string `json:"updated,omitempty"`
+	When     string   `json:"when"`
 }
 
 // composeCommand describes how to invoke Compose on this host. It supports
@@ -113,78 +128,125 @@ func detectCompose(ctx context.Context) (composeCommand, error) {
 
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.LUTC)
-	// INCLUDE_DIRS is the preferred setting; SCAN_PATHS remains as a backwards-compatible alias.
-	includeValue := strings.TrimSpace(os.Getenv("INCLUDE_DIRS"))
-	if includeValue == "" {
-		includeValue = env("SCAN_PATHS", "/stacks")
+
+	cfg, err := loadConfig()
+	if err != nil {
+		log.Fatalf("load config: %v", err)
 	}
-	roots := splitList(includeValue)
-	excludes := splitList(os.Getenv("EXCLUDE_DIRS"))
-	if len(roots) == 0 {
-		log.Fatal("INCLUDE_DIRS/SCAN_PATHS must contain at least one directory")
-	}
-	depth := 5
-	if v := os.Getenv("SCAN_DEPTH"); v != "" {
-		if _, err := fmt.Sscanf(v, "%d", &depth); err != nil || depth < 0 {
-			log.Fatalf("invalid SCAN_DEPTH %q", v)
-		}
-	}
-	timeout := 30 * time.Minute
-	if v := os.Getenv("COMMAND_TIMEOUT"); v != "" {
-		d, err := time.ParseDuration(v)
-		if err != nil {
-			log.Fatalf("invalid COMMAND_TIMEOUT: %v", err)
-		}
-		timeout = d
-	}
-	u := &updater{roots: roots, excludes: excludes, depth: depth, autoUpdate: strings.EqualFold(env("AUTO_UPDATE", "true"), "true"), timeout: timeout}
 	cc, err := detectCompose(context.Background())
 	if err != nil {
 		log.Fatalf("compose not available: %v", err)
 	}
-	u.compose = cc
-	zone := env("TZ", "Asia/Shanghai")
-	loc, err := time.LoadLocation(zone)
-	if err != nil {
-		log.Fatalf("invalid TZ %q: %v", zone, err)
+	u := &updater{cfg: cfg, compose: cc}
+	log.Printf("compose-auto-updater started; compose=%s wait=%t include_dirs=%v exclude_dirs=%v depth=%d auto_update=%t cron=%q tz=%s config=%s",
+		cc.display, cc.supports, cfg.IncludeDirs, cfg.ExcludeDirs, cfg.ScanDepth, cfg.AutoUpdate, cfg.CronSchedule, cfg.Timezone, cfg.path)
+
+	// Optional web management UI; disabled with WEB_ADDR=off.
+	go startWeb(u, env("WEB_ADDR", ":8080"))
+
+	if cfg.RunOnStart {
+		go u.run()
 	}
-	cronExpr := env("CRON_SCHEDULE", "0 */6 * * *")
-	schedule, err := parseCron(cronExpr)
-	if err != nil {
-		log.Fatalf("invalid CRON_SCHEDULE %q: %v", cronExpr, err)
-	}
-	log.Printf("compose-auto-updater started; compose=%s wait=%t include_dirs=%q exclude_dirs=%q depth=%d auto_update=%t cron=%q TZ=%s", cc.display, cc.supports, roots, excludes, depth, u.autoUpdate, cronExpr, zone)
-	if strings.EqualFold(env("RUN_ON_START", "true"), "true") {
-		u.run()
-	}
+
+	// Scheduler: recompute the next run each cycle so config changes (cron,
+	// timezone) take effect without a restart.
+	timer := time.NewTimer(time.Hour)
 	for {
-		now := time.Now().In(loc)
+		schedule, err := u.schedule()
+		if err != nil {
+			log.Printf("invalid schedule, retrying in 1m: %v", err)
+			timer.Reset(time.Minute)
+			<-timer.C
+			continue
+		}
+		now := time.Now().In(schedule.loc)
 		next := schedule.Next(now)
 		if next.IsZero() {
-			log.Fatal("could not find next run time for CRON_SCHEDULE")
+			log.Printf("could not find next run time, retrying in 1m")
+			timer.Reset(time.Minute)
+			<-timer.C
+			continue
 		}
+		u.setNextRun(next)
 		delay := time.Until(next)
 		log.Printf("next scan at %s (in %s)", next.Format(time.RFC3339), delay.Round(time.Second))
-		t := time.NewTimer(delay)
-		<-t.C
+		timer.Reset(delay)
+		<-timer.C
 		u.run()
 	}
 }
 
+// namedSchedule wraps a parsed cron with the location it should be evaluated in.
+type namedSchedule struct {
+	cron *cronSchedule
+	loc  *time.Location
+}
+
+// schedule parses the current configuration into a runnable schedule.
+func (u *updater) schedule() (*namedSchedule, error) {
+	u.cfg.mu.Lock()
+	cronExpr := u.cfg.CronSchedule
+	zone := u.cfg.Timezone
+	u.cfg.mu.Unlock()
+	loc, err := time.LoadLocation(zone)
+	if err != nil {
+		return nil, fmt.Errorf("invalid timezone %q: %w", zone, err)
+	}
+	cron, err := parseCron(cronExpr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid cron %q: %w", cronExpr, err)
+	}
+	return &namedSchedule{cron: cron, loc: loc}, nil
+}
+
+func (s *namedSchedule) Next(after time.Time) time.Time {
+	return s.cron.Next(after.In(s.loc))
+}
+
+func (u *updater) setNextRun(t time.Time) {
+	u.mu.Lock()
+	u.nextRun = t
+	u.mu.Unlock()
+}
+
 func (u *updater) run() {
+	u.mu.Lock()
+	if u.running {
+		u.mu.Unlock()
+		log.Printf("scan already running; skipping this trigger")
+		return
+	}
+	u.running = true
+	u.mu.Unlock()
+	defer func() {
+		u.mu.Lock()
+		u.running = false
+		u.lastRun = time.Now()
+		u.mu.Unlock()
+	}()
+
 	started := time.Now()
 	files := u.discover()
 	log.Printf("scan started: found %d Compose file(s)", len(files))
+	results := make([]projectResult, 0, len(files))
 	for _, file := range files {
-		u.process(file)
+		results = append(results, u.processProject(file))
 	}
+	u.mu.Lock()
+	u.lastResults = results
+	u.mu.Unlock()
 	log.Printf("scan finished in %s", time.Since(started).Round(time.Second))
 }
 
 func (u *updater) discover() []string {
+	u.cfg.mu.Lock()
+	roots := append([]string(nil), u.cfg.IncludeDirs...)
+	depth := u.cfg.ScanDepth
+	u.cfg.mu.Unlock()
+
 	seen := map[string]bool{}
 	var files []string
-	for _, root := range u.roots {
+	for _, root := range roots {
 		root = filepath.Clean(root)
 		info, err := os.Stat(root)
 		if err != nil || !info.IsDir() {
@@ -197,10 +259,10 @@ func (u *updater) discover() []string {
 				return nil
 			}
 			if d.IsDir() {
-				if path != root && u.depth >= 0 {
+				if path != root && depth >= 0 {
 					rel, _ := filepath.Rel(root, path)
 					level := strings.Count(rel, string(filepath.Separator)) + 1
-					if level > u.depth {
+					if level > depth {
 						return filepath.SkipDir
 					}
 				}
@@ -227,8 +289,12 @@ func (u *updater) discover() []string {
 }
 
 func (u *updater) excluded(path string) bool {
+	u.cfg.mu.Lock()
+	excludes := append([]string(nil), u.cfg.ExcludeDirs...)
+	u.cfg.mu.Unlock()
+
 	p, _ := filepath.Abs(path)
-	for _, x := range u.excludes {
+	for _, x := range excludes {
 		x, _ = filepath.Abs(filepath.Clean(x))
 		rel, err := filepath.Rel(x, p)
 		if err == nil && (rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))) {
@@ -238,24 +304,63 @@ func (u *updater) excluded(path string) bool {
 	return false
 }
 
-func (u *updater) process(file string) {
-	ctx, cancel := context.WithTimeout(context.Background(), u.timeout)
+// projectResultNow builds a timestamped result for the current moment.
+func nowResult(file string, enabled bool) projectResult {
+	return projectResult{File: file, Enabled: enabled, When: time.Now().Format(time.RFC3339)}
+}
+
+// timeout returns the configured per-command timeout.
+func (u *updater) timeout() time.Duration {
+	u.cfg.mu.Lock()
+	s := u.cfg.CommandTimeout
+	u.cfg.mu.Unlock()
+	d, err := time.ParseDuration(s)
+	if err != nil || d <= 0 {
+		return 30 * time.Minute
+	}
+	return d
+}
+
+// processProject inspects and updates a single compose project, returning a
+// result for the web UI. force=true recreates whenever an update is available
+// regardless of the per-project enabled flag (used by the manual "run" action),
+// but still respects build-only services.
+func (u *updater) processProject(file string) projectResult {
+	u.cfg.mu.Lock()
+	autoUpdate := u.cfg.AutoUpdate
+	u.cfg.mu.Unlock()
+	enabled := u.cfg.ProjectEnabled(file)
+	return u.process(file, enabled, autoUpdate)
+}
+
+func (u *updater) process(file string, enabled, autoUpdate bool) projectResult {
+	res := nowResult(file, enabled)
+	if !enabled {
+		res.Status = "skipped"
+		res.Detail = "disabled in web UI"
+		log.Printf("skip %s: disabled in web UI", file)
+		return res
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), u.timeout())
 	defer cancel()
 	log.Printf("project: %s", file)
 	configOut, err := u.runCmd(ctx, filepath.Dir(file), u.compose.withFile(file, "config", "--format", "json"))
 	if err != nil {
-		log.Printf("skip %s: compose config failed: %v", file, err)
-		return
+		res.Status, res.Detail = "failed", "compose config failed: "+err.Error()
+		log.Printf("skip %s: %v", file, res.Detail)
+		return res
 	}
 	var cfg composeConfig
 	if err := json.Unmarshal(configOut, &cfg); err != nil {
-		log.Printf("skip %s: cannot parse compose config: %v", file, err)
-		return
+		res.Status, res.Detail = "failed", "cannot parse compose config: "+err.Error()
+		log.Printf("skip %s: %v", file, res.Detail)
+		return res
 	}
 	psOut, err := u.runCmd(ctx, filepath.Dir(file), u.compose.withFile(file, "ps", "--services", "--status", "running"))
 	if err != nil {
-		log.Printf("skip %s: cannot list running services: %v", file, err)
-		return
+		res.Status, res.Detail = "failed", "cannot list running services: "+err.Error()
+		log.Printf("skip %s: %v", file, res.Detail)
+		return res
 	}
 	running := map[string]bool{}
 	for _, s := range strings.Split(string(psOut), "\n") {
@@ -265,8 +370,9 @@ func (u *updater) process(file string) {
 		}
 	}
 	if len(running) == 0 {
-		log.Printf("skip %s: no running Compose services", file)
-		return
+		res.Status, res.Detail = "skipped", "no running Compose services"
+		log.Printf("skip %s: %v", file, res.Detail)
+		return res
 	}
 	var eligible []string
 	for name, svc := range cfg.Services {
@@ -276,9 +382,11 @@ func (u *updater) process(file string) {
 		eligible = append(eligible, name)
 	}
 	sort.Strings(eligible)
+	res.Services = eligible
 	if len(eligible) == 0 {
-		log.Printf("skip %s: no running image-only services eligible for update", file)
-		return
+		res.Status, res.Detail = "skipped", "no running image-only services eligible for update"
+		log.Printf("skip %s: %v", file, res.Detail)
+		return res
 	}
 	log.Printf("%s: eligible running services: %s", file, strings.Join(eligible, ", "))
 
@@ -286,24 +394,29 @@ func (u *updater) process(file string) {
 	// recreate the services whose image actually changed after pulling.
 	before, err := u.containerImageIDs(ctx, filepath.Dir(file), file, eligible)
 	if err != nil {
-		log.Printf("skip %s: cannot read current image IDs: %v", file, err)
-		return
+		res.Status, res.Detail = "failed", "cannot read current image IDs: "+err.Error()
+		log.Printf("skip %s: %v", file, res.Detail)
+		return res
 	}
 
 	if _, err := u.runCmd(ctx, filepath.Dir(file), u.compose.withFile(file, "pull", eligible...)); err != nil {
+		res.Status, res.Detail = "failed", "pull failed: "+err.Error()
 		log.Printf("pull failed for %s: %v", file, err)
-		return
+		return res
 	}
 
 	changed := u.changedServices(ctx, filepath.Dir(file), eligible, cfg, before)
+	res.Updated = changed
 	if len(changed) == 0 {
-		log.Printf("%s: images unchanged, nothing to recreate", file)
-		return
+		res.Status, res.Detail = "unchanged", "images unchanged, nothing to recreate"
+		log.Printf("%s: %v", file, res.Detail)
+		return res
 	}
 	log.Printf("%s: image updated for: %s", file, strings.Join(changed, ", "))
-	if !u.autoUpdate {
+	if !autoUpdate {
+		res.Status, res.Detail = "pulled", "images pulled only (auto_update=false)"
 		log.Printf("AUTO_UPDATE=false: pulled images only; not recreating %s", file)
-		return
+		return res
 	}
 	upArgs := []string{"-d", "--no-deps", "--no-build"}
 	if u.compose.supports {
@@ -311,10 +424,13 @@ func (u *updater) process(file string) {
 	}
 	upArgs = append(upArgs, changed...)
 	if out, err := u.runCmd(ctx, filepath.Dir(file), u.compose.withFile(file, "up", upArgs...)); err != nil {
+		res.Status, res.Detail = "failed", "update failed: "+err.Error()
 		log.Printf("UPDATE FAILED for %s: %v\n%s", file, err, strings.TrimSpace(string(out)))
-		return
+		return res
 	}
+	res.Status, res.Detail = "updated", "recreated: "+strings.Join(changed, ", ")
 	log.Printf("updated successfully: %s", file)
+	return res
 }
 
 // containerImageIDs returns, for each running service, the image ID of its
@@ -437,7 +553,7 @@ func hasBuild(raw json.RawMessage) bool {
 }
 
 func (u *updater) runCmd(parent context.Context, dir string, argv []string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(parent, u.timeout)
+	ctx, cancel := context.WithTimeout(parent, u.timeout())
 	defer cancel()
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = dir
@@ -465,10 +581,4 @@ func splitList(s string) []string {
 		}
 	}
 	return out
-}
-func env(k, fallback string) string {
-	if v := strings.TrimSpace(os.Getenv(k)); v != "" {
-		return v
-	}
-	return fallback
 }

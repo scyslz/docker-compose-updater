@@ -9,14 +9,19 @@ Edit `compose.yaml` and set `INCLUDE_DIRS` and `EXCLUDE_DIRS`. Paths are paths *
 ```yaml
 environment:
   TZ: Asia/Shanghai
+  WEB_ADDR: ":8080"
+  CONFIG_FILE: /config/updater.json
   INCLUDE_DIRS: /data/docker,/opt/stacks
   EXCLUDE_DIRS: /data/docker/archive,/opt/stacks/manual
   SCAN_DEPTH: "5"
   CRON_SCHEDULE: "0 */6 * * *"
   RUN_ON_START: "true"
   AUTO_UPDATE: "true"
+ports:
+  - "8080:8080"
 volumes:
   - /var/run/docker.sock:/var/run/docker.sock
+  - ./config:/config
   - /data/docker:/data/docker:rw
   - /opt/stacks:/opt/stacks:rw
 ```
@@ -27,6 +32,8 @@ Then run:
 docker compose up -d
 docker logs -f compose-auto-updater
 ```
+
+Open `http://<host>:8080` for the web UI.
 
 ### Prebuilt image
 
@@ -56,6 +63,39 @@ COMPOSE_AUTO_UPDATER_IMAGE=ghcr.io/scyslz/docker-compose-updater:latest
 - `AUTO_UPDATE`: `true` pulls and recreates eligible services; `false` only pulls. Default `true`.
 - `COMMAND_TIMEOUT`: timeout per Docker command; default `30m`.
 - `PREFER_COMPOSE`: force a Compose implementation. Unset (default) auto-detects `docker compose` (v2) first, then falls back to `docker-compose` (v1). Set to `v2` or `v1` to force one.
+
+## Web management UI
+
+The updater embeds a small web UI (default `http://<host>:8080`) for viewing and editing configuration without touching files by hand:
+
+- **Schedule & scanning**: edit `cron_schedule`, timezone, scan depth, include/exclude dirs, command timeout, and the `auto_update` / `run_on_start` toggles. Saving writes the config file and the scheduler picks up the new cron on its next cycle (no restart needed).
+- **Projects**: every discovered Compose file is listed. Uncheck a project to exclude it from automatic updates. The per-file enable state is persisted in the config file.
+- **Run now**: trigger a scan/update immediately.
+- Each project shows its last-scan status: `updated`, `unchanged`, `skipped`, `pulled`, or `failed`.
+
+The UI has **no authentication** — bind it to a trusted network or put it behind a reverse proxy. Set `WEB_ADDR=off` to disable it.
+
+## Configuration file
+
+Configuration is stored as a single JSON file (`CONFIG_FILE`, default `/config/updater.json`) so it survives restarts and can be managed from the web UI. Environment variables act as defaults and are used only **before** the file exists; once the file is present, its values win.
+
+See `config.example.json` for the full shape:
+
+```json
+{
+  "include_dirs": ["/data/docker", "/opt/stacks"],
+  "exclude_dirs": ["/data/docker/compose-auto-updater"],
+  "scan_depth": 5,
+  "cron_schedule": "0 */6 * * *",
+  "timezone": "Asia/Shanghai",
+  "run_on_start": true,
+  "auto_update": true,
+  "command_timeout": "30m",
+  "disabled_projects": {}
+}
+```
+
+`disabled_projects` maps an absolute compose file path to `true` when it is excluded via the web UI. Mount `./config` (or any host dir) to `/config` to persist it.
 
 ## Behavior and safety
 

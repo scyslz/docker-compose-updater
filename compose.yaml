@@ -5,8 +5,17 @@ services:
     image: ${COMPOSE_AUTO_UPDATER_IMAGE:-ghcr.io/scyslz/docker-compose-updater:latest}
     container_name: compose-auto-updater
     restart: unless-stopped
+    ports:
+      # Web management UI. Change or remove to disable exposure.
+      - "8080:8080"
     environment:
       TZ: Asia/Shanghai
+      # Web UI listen address; set to "off" to disable the UI entirely.
+      WEB_ADDR: ":8080"
+      # Where the editable config is stored (mounted below). Environment values
+      # below are only defaults used before the config file exists; once the web
+      # UI saves a config, that file wins.
+      CONFIG_FILE: /config/updater.json
       # Comma- or semicolon-separated paths, inside the container.
       INCLUDE_DIRS: /data/docker,/opt/stacks
       EXCLUDE_DIRS: /data/docker/compose-auto-updater,/opt/stacks/manual
@@ -19,6 +28,8 @@ services:
       COMMAND_TIMEOUT: 30m
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      # Persistent, web-editable configuration.
+      - ./config:/config
       # Mount each host directory at the exact same absolute path used by INCLUDE_DIRS.
       - /data/docker:/data/docker:rw
       - /opt/stacks:/opt/stacks:rw

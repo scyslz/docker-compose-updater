@@ -10,4 +10,7 @@ FROM docker:cli
 RUN apk add --no-cache docker-cli-compose tzdata
 COPY --from=build /out/compose-auto-updater /usr/local/bin/compose-auto-updater
 ENV TZ=Asia/Shanghai
+ENV CONFIG_FILE=/config/updater.json
+VOLUME ["/config"]
+EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/compose-auto-updater"]

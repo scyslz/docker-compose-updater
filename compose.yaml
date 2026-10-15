@@ -1,0 +1,24 @@
+services:
+  compose-auto-updater:
+    build: .
+    # Default to the image published by this repo's GitHub Actions workflow.
+    # Override with COMPOSE_AUTO_UPDATER_IMAGE in .env to use a fork/other registry.
+    image: ${COMPOSE_AUTO_UPDATER_IMAGE:-ghcr.io/scyslz/docker-compose-updater:latest}
+    container_name: compose-auto-updater
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      # Comma- or semicolon-separated paths, inside the container.
+      INCLUDE_DIRS: /data/docker,/opt/stacks
+      EXCLUDE_DIRS: /data/docker/compose-auto-updater,/opt/stacks/manual
+      SCAN_DEPTH: "5"
+      # Standard five-field cron expression: minute hour day-of-month month day-of-week.
+      CRON_SCHEDULE: "0 4 * * *"
+      RUN_ON_START: "true"
+      AUTO_UPDATE: "true"
+      COMMAND_TIMEOUT: 30m
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Mount each host directory at the exact same absolute path used by INCLUDE_DIRS.
+      - /data/docker:/data/docker:rw
+      - /opt/stacks:/opt/stacks:rw

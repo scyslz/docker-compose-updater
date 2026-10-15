@@ -20,6 +20,7 @@ services:
       # as updater.json to seed the initial values.
       - ./config:/config
       # Mount each host directory at the exact same absolute path used for the
-      # include dirs you configure in the UI.
-      - /data/docker:/data/docker:rw
-      - /opt/stacks:/opt/stacks:rw
+      # include dirs you configure in the UI. Read-only: the updater only scans
+      # compose files; Docker changes go through the socket.
+      - /data/docker:/data/docker:ro
+      - /opt/stacks:/opt/stacks:ro

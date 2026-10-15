@@ -17,8 +17,8 @@ environment:
 volumes:
   - /var/run/docker.sock:/var/run/docker.sock
   - ./config:/config
-  - /data/docker:/data/docker:rw
-  - /opt/stacks:/opt/stacks:rw
+  - /data/docker:/data/docker:ro
+  - /opt/stacks:/opt/stacks:ro
 ```
 
 Then run:

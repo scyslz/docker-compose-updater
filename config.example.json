@@ -1,17 +1,8 @@
 {
-  "include_dirs": [
-    "/data/docker",
-    "/opt/stacks"
-  ],
-  "exclude_dirs": [
-    "/data/docker/compose-auto-updater",
-    "/opt/stacks/manual"
-  ],
-  "scan_depth": 5,
   "cron_schedule": "0 */6 * * *",
   "timezone": "Asia/Shanghai",
   "run_on_start": true,
   "auto_update": true,
   "command_timeout": "30m",
-  "disabled_projects": {}
+  "enabled_projects": {}
 }

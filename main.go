@@ -15,11 +15,6 @@ import (
 	"time"
 )
 
-var composeNames = map[string]bool{
-	"compose.yml": true, "compose.yaml": true,
-	"docker-compose.yml": true, "docker-compose.yaml": true,
-}
-
 type serviceConfig struct {
 	Image string          `json:"image"`
 	Build json.RawMessage `json:"build"`
@@ -43,8 +38,9 @@ type updater struct {
 // web UI.
 type projectResult struct {
 	File     string   `json:"file"`
+	Project  string   `json:"project,omitempty"`
 	Enabled  bool     `json:"enabled"`
-	Status   string   `json:"status"` // updated, unchanged, skipped, failed
+	Status   string   `json:"status"` // updated, unchanged, skipped, unmounted, pulled, failed
 	Detail   string   `json:"detail"`
 	Services []string `json:"services,omitempty"`
 	Updated  []string `json:"updated,omitempty"`
@@ -138,8 +134,8 @@ func main() {
 		log.Fatalf("compose not available: %v", err)
 	}
 	u := &updater{cfg: cfg, compose: cc}
-	log.Printf("compose-auto-updater started; compose=%s wait=%t include_dirs=%v exclude_dirs=%v depth=%d auto_update=%t cron=%q tz=%s config=%s",
-		cc.display, cc.supports, cfg.IncludeDirs, cfg.ExcludeDirs, cfg.ScanDepth, cfg.AutoUpdateEnabled(), cfg.CronSchedule, cfg.Timezone, cfg.path)
+	log.Printf("compose-auto-updater started; compose=%s wait=%t auto_update=%t cron=%q tz=%s config=%s",
+		cc.display, cc.supports, cfg.AutoUpdateEnabled(), cfg.CronSchedule, cfg.Timezone, cfg.path)
 
 	// Optional web management UI; disabled with WEB_ADDR=off.
 	go startWeb(u, env("WEB_ADDR", ":8080"))
@@ -226,11 +222,15 @@ func (u *updater) run() {
 	}()
 
 	started := time.Now()
-	files := u.discover()
-	log.Printf("scan started: found %d Compose file(s)", len(files))
-	results := make([]projectResult, 0, len(files))
-	for _, file := range files {
-		results = append(results, u.processProject(file))
+	projects, err := u.discoverRunningProjects(context.Background())
+	if err != nil {
+		log.Printf("scan: cannot list running projects: %v", err)
+		return
+	}
+	log.Printf("scan started: found %d running Compose project(s)", len(projects))
+	results := make([]projectResult, 0, len(projects))
+	for _, p := range projects {
+		results = append(results, u.processProject(p, false))
 	}
 	u.mu.Lock()
 	u.lastResults = results
@@ -238,75 +238,9 @@ func (u *updater) run() {
 	log.Printf("scan finished in %s", time.Since(started).Round(time.Second))
 }
 
-func (u *updater) discover() []string {
-	u.cfg.mu.Lock()
-	roots := append([]string(nil), u.cfg.IncludeDirs...)
-	depth := u.cfg.ScanDepth
-	u.cfg.mu.Unlock()
-
-	seen := map[string]bool{}
-	var files []string
-	for _, root := range roots {
-		root = filepath.Clean(root)
-		info, err := os.Stat(root)
-		if err != nil || !info.IsDir() {
-			log.Printf("skip scan root %q: not accessible directory", root)
-			continue
-		}
-		err = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-			if err != nil {
-				log.Printf("walk %s: %v", path, err)
-				return nil
-			}
-			if d.IsDir() {
-				if path != root && depth >= 0 {
-					rel, _ := filepath.Rel(root, path)
-					level := strings.Count(rel, string(filepath.Separator)) + 1
-					if level > depth {
-						return filepath.SkipDir
-					}
-				}
-				if u.excluded(path) {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			if composeNames[strings.ToLower(d.Name())] {
-				abs, e := filepath.Abs(path)
-				if e == nil && !seen[abs] {
-					seen[abs] = true
-					files = append(files, abs)
-				}
-			}
-			return nil
-		})
-		if err != nil {
-			log.Printf("scan %s: %v", root, err)
-		}
-	}
-	sort.Strings(files)
-	return files
-}
-
-func (u *updater) excluded(path string) bool {
-	u.cfg.mu.Lock()
-	excludes := append([]string(nil), u.cfg.ExcludeDirs...)
-	u.cfg.mu.Unlock()
-
-	p, _ := filepath.Abs(path)
-	for _, x := range excludes {
-		x, _ = filepath.Abs(filepath.Clean(x))
-		rel, err := filepath.Rel(x, p)
-		if err == nil && (rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))) {
-			return true
-		}
-	}
-	return false
-}
-
 // projectResultNow builds a timestamped result for the current moment.
-func nowResult(file string, enabled bool) projectResult {
-	return projectResult{File: file, Enabled: enabled, When: time.Now().Format(time.RFC3339)}
+func nowResult(p composeProject, enabled bool) projectResult {
+	return projectResult{File: p.File, Project: p.Project, Enabled: enabled, When: time.Now().Format(time.RFC3339)}
 }
 
 // timeout returns the configured per-command timeout.
@@ -321,45 +255,60 @@ func (u *updater) timeout() time.Duration {
 	return d
 }
 
-// processProject inspects and updates a single compose project, returning a
-// result for the web UI. force=true recreates whenever an update is available
-// regardless of the per-project enabled flag (used by the manual "run" action),
-// but still respects build-only services.
-func (u *updater) processProject(file string) projectResult {
+// processProject inspects and updates a single running project, returning a
+// result for the web UI. When forced (manual "check & update" action) the
+// per-project allowlist is ignored, but the global auto_update switch and the
+// build-only filter still apply.
+func (u *updater) processProject(p composeProject, forced bool) projectResult {
 	u.cfg.mu.Lock()
 	autoUpdate := u.cfg.AutoUpdateEnabled()
 	u.cfg.mu.Unlock()
-	enabled := u.cfg.ProjectEnabled(file)
-	return u.process(file, enabled, autoUpdate)
+	enabled := u.cfg.ProjectEnabled(p.Key())
+	if !forced && !enabled {
+		res := nowResult(p, enabled)
+		res.Status, res.Detail = "skipped", "not selected for scheduled updates"
+		log.Printf("skip %s: not selected for scheduled updates", p.Key())
+		return res
+	}
+	return u.process(p, enabled, autoUpdate)
 }
 
-func (u *updater) process(file string, enabled, autoUpdate bool) projectResult {
-	res := nowResult(file, enabled)
-	if !enabled {
-		res.Status = "skipped"
-		res.Detail = "disabled in web UI"
-		log.Printf("skip %s: disabled in web UI", file)
+func (u *updater) process(p composeProject, enabled, autoUpdate bool) projectResult {
+	res := nowResult(p, enabled)
+	file := p.File
+	if file == "" {
+		res.Status, res.Detail = "failed", "no compose file in project labels"
+		log.Printf("skip %s: %v", p.Project, res.Detail)
 		return res
+	}
+	if !fileReadable(file) {
+		res.Status, res.Detail = "unmounted", "compose file not mounted/readable inside the container: "+file
+		log.Printf("skip %s: %v", p.Key(), res.Detail)
+		return res
+	}
+	dir := p.WorkingDir
+	if dir == "" {
+		dir = filepath.Dir(file)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), u.timeout())
 	defer cancel()
-	log.Printf("project: %s", file)
-	configOut, err := u.runCmd(ctx, filepath.Dir(file), u.compose.withFile(file, "config", "--format", "json"))
+	log.Printf("project: %s (%s)", p.Project, file)
+	configOut, err := u.runCmd(ctx, dir, u.compose.withFile(file, "config", "--format", "json"))
 	if err != nil {
 		res.Status, res.Detail = "failed", "compose config failed: "+err.Error()
-		log.Printf("skip %s: %v", file, res.Detail)
+		log.Printf("skip %s: %v", p.Key(), res.Detail)
 		return res
 	}
 	var cfg composeConfig
 	if err := json.Unmarshal(configOut, &cfg); err != nil {
 		res.Status, res.Detail = "failed", "cannot parse compose config: "+err.Error()
-		log.Printf("skip %s: %v", file, res.Detail)
+		log.Printf("skip %s: %v", p.Key(), res.Detail)
 		return res
 	}
-	psOut, err := u.runCmd(ctx, filepath.Dir(file), u.compose.withFile(file, "ps", "--services", "--status", "running"))
+	psOut, err := u.runCmd(ctx, dir, u.compose.withFile(file, "ps", "--services", "--status", "running"))
 	if err != nil {
 		res.Status, res.Detail = "failed", "cannot list running services: "+err.Error()
-		log.Printf("skip %s: %v", file, res.Detail)
+		log.Printf("skip %s: %v", p.Key(), res.Detail)
 		return res
 	}
 	running := map[string]bool{}
@@ -371,7 +320,7 @@ func (u *updater) process(file string, enabled, autoUpdate bool) projectResult {
 	}
 	if len(running) == 0 {
 		res.Status, res.Detail = "skipped", "no running Compose services"
-		log.Printf("skip %s: %v", file, res.Detail)
+		log.Printf("skip %s: %v", p.Key(), res.Detail)
 		return res
 	}
 	var eligible []string
@@ -385,37 +334,37 @@ func (u *updater) process(file string, enabled, autoUpdate bool) projectResult {
 	res.Services = eligible
 	if len(eligible) == 0 {
 		res.Status, res.Detail = "skipped", "no running image-only services eligible for update"
-		log.Printf("skip %s: %v", file, res.Detail)
+		log.Printf("skip %s: %v", p.Key(), res.Detail)
 		return res
 	}
-	log.Printf("%s: eligible running services: %s", file, strings.Join(eligible, ", "))
+	log.Printf("%s: eligible running services: %s", p.Key(), strings.Join(eligible, ", "))
 
 	// Record the image ID each running container currently uses, so we only
 	// recreate the services whose image actually changed after pulling.
-	before, err := u.containerImageIDs(ctx, filepath.Dir(file), file, eligible)
+	before, err := u.containerImageIDs(ctx, dir, file, eligible)
 	if err != nil {
 		res.Status, res.Detail = "failed", "cannot read current image IDs: "+err.Error()
-		log.Printf("skip %s: %v", file, res.Detail)
+		log.Printf("skip %s: %v", p.Key(), res.Detail)
 		return res
 	}
 
-	if _, err := u.runCmd(ctx, filepath.Dir(file), u.compose.withFile(file, "pull", eligible...)); err != nil {
+	if _, err := u.runCmd(ctx, dir, u.compose.withFile(file, "pull", eligible...)); err != nil {
 		res.Status, res.Detail = "failed", "pull failed: "+err.Error()
-		log.Printf("pull failed for %s: %v", file, err)
+		log.Printf("pull failed for %s: %v", p.Key(), err)
 		return res
 	}
 
-	changed := u.changedServices(ctx, filepath.Dir(file), eligible, cfg, before)
+	changed := u.changedServices(ctx, dir, eligible, cfg, before)
 	res.Updated = changed
 	if len(changed) == 0 {
 		res.Status, res.Detail = "unchanged", "images unchanged, nothing to recreate"
-		log.Printf("%s: %v", file, res.Detail)
+		log.Printf("%s: %v", p.Key(), res.Detail)
 		return res
 	}
-	log.Printf("%s: image updated for: %s", file, strings.Join(changed, ", "))
+	log.Printf("%s: image updated for: %s", p.Key(), strings.Join(changed, ", "))
 	if !autoUpdate {
 		res.Status, res.Detail = "pulled", "images pulled only (auto_update=false)"
-		log.Printf("AUTO_UPDATE=false: pulled images only; not recreating %s", file)
+		log.Printf("AUTO_UPDATE=false: pulled images only; not recreating %s", p.Key())
 		return res
 	}
 	upArgs := []string{"-d", "--no-deps", "--no-build"}
@@ -423,14 +372,20 @@ func (u *updater) process(file string, enabled, autoUpdate bool) projectResult {
 		upArgs = append(upArgs, "--wait")
 	}
 	upArgs = append(upArgs, changed...)
-	if out, err := u.runCmd(ctx, filepath.Dir(file), u.compose.withFile(file, "up", upArgs...)); err != nil {
+	if out, err := u.runCmd(ctx, dir, u.compose.withFile(file, "up", upArgs...)); err != nil {
 		res.Status, res.Detail = "failed", "update failed: "+err.Error()
-		log.Printf("UPDATE FAILED for %s: %v\n%s", file, err, strings.TrimSpace(string(out)))
+		log.Printf("UPDATE FAILED for %s: %v\n%s", p.Key(), err, strings.TrimSpace(string(out)))
 		return res
 	}
 	res.Status, res.Detail = "updated", "recreated: "+strings.Join(changed, ", ")
-	log.Printf("updated successfully: %s", file)
+	log.Printf("updated successfully: %s", p.Key())
 	return res
+}
+
+// checkAndUpdate runs a single project immediately (manual action), bypassing
+// the scheduled-update allowlist but honoring the global settings.
+func (u *updater) checkAndUpdate(p composeProject) projectResult {
+	return u.processProject(p, true)
 }
 
 // containerImageIDs returns, for each running service, the image ID of its

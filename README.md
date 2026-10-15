@@ -1,12 +1,12 @@
 # Compose Auto Updater (Go)
 
-A small containerized Go utility that scans configured directory trees for Docker Compose files, then pulls and updates only currently-running, image-based Compose services. It does not enumerate or update standalone `docker run` containers.
+A small containerized Go utility with an embedded web UI. It discovers **currently-running** Docker Compose projects from Docker labels, then pulls and updates only the image-based services you select. It does not touch standalone `docker run` containers.
 
 ## Quick start
 
-1. Mount each host directory you want scanned at the **same absolute path** inside the container (so Compose relative paths and `.env` files resolve as expected), and mount a host dir to `/config`.
-2. Optionally seed the config by copying `config.example.json` to `./config/updater.json` and adjusting the paths. You can also start with an empty `./config` and configure everything in the web UI.
-3. Start the container and open the web UI to set scan dirs, schedule, and per-project toggles.
+1. Start the container — running Compose projects are listed automatically (discovered from Docker labels, no scanning required).
+2. Mount each host directory that contains a project you want to update at the **same absolute path** the Docker daemon reports (read-only), plus a writable dir to `/config`. Unmounted projects are still listed but marked "not mounted".
+3. Open the web UI to tick the projects to update on schedule, or click **Check & update** to update one project immediately.
 
 ```yaml
 ports:
@@ -17,8 +17,9 @@ environment:
 volumes:
   - /var/run/docker.sock:/var/run/docker.sock
   - ./config:/config
-  - /data/docker:/data/docker:ro
-  - /opt/stacks:/opt/stacks:ro
+  # Mount the dirs holding your compose projects at the SAME absolute path
+  # the daemon reports (see `com.docker.compose.project.config_files`).
+  - /home/hq/docker-data:/home/hq/docker-data:ro
 ```
 
 Then run:
@@ -55,16 +56,18 @@ Only bootstrap settings are read from the environment; all updater settings live
 - `WEB_ADDR`: web UI listen address; default `:8080`. Set to `off` to disable the UI.
 - `PREFER_COMPOSE`: force a Compose implementation. Unset (default) auto-detects `docker compose` (v2) first, then falls back to `docker-compose` (v1). Set to `v2` or `v1` to force one.
 
-The following settings are configured in the file / web UI (not via environment), with these defaults: scan roots `/stacks`, depth `5`, cron `0 */6 * * *`, timezone `Asia/Shanghai`, `run_on_start` and `auto_update` both `true`, command timeout `30m`, and no exclusions.
+The following settings are configured in the file / web UI (not via environment), with these defaults: cron `0 */6 * * *`, timezone `Asia/Shanghai`, `run_on_start` and `auto_update` both `true`, command timeout `30m`, and no projects selected for scheduled updates.
 
 ## Web management UI
 
 The updater embeds a small web UI (default `http://<host>:8080`) for viewing and editing configuration without touching files by hand:
 
-- **Schedule & scanning**: edit `cron_schedule`, timezone, scan depth, include/exclude dirs, command timeout, and the `auto_update` / `run_on_start` toggles. Saving writes the config file and the scheduler picks up the new cron on its next cycle (no restart needed).
-- **Projects**: every discovered Compose file is listed. Uncheck a project to exclude it from automatic updates. The per-file enable state is persisted in the config file.
-- **Run now**: trigger a scan/update immediately.
-- Each project shows its last-scan status: `updated`, `unchanged`, `skipped`, `pulled`, or `failed`.
+- **Schedule**: edit `cron_schedule`, timezone, command timeout, and the `auto_update` / `run_on_start` toggles. Saving writes the config file and the scheduler picks up the new cron on its next cycle (no restart needed).
+- **Running projects**: every currently-running Compose project is listed (from Docker labels). Tick a project to include it in the **scheduled** update; use **Check & update** to update just that project immediately — even if it is not ticked.
+- **Scan all now**: run a full scan over all selected projects.
+- Each project shows its last status: `updated`, `unchanged`, `skipped`, `unmounted`, `pulled`, or `failed`.
+
+Projects whose compose file is not mounted inside the container appear with a **not mounted** marker; their checkbox and button are disabled until you mount the directory.
 
 The UI has **no authentication** — bind it to a trusted network or put it behind a reverse proxy. Set `WEB_ADDR=off` to disable it.
 
@@ -76,26 +79,24 @@ See `config.example.json` for the full shape:
 
 ```json
 {
-  "include_dirs": ["/data/docker", "/opt/stacks"],
-  "exclude_dirs": ["/data/docker/compose-auto-updater"],
-  "scan_depth": 5,
   "cron_schedule": "0 */6 * * *",
   "timezone": "Asia/Shanghai",
   "run_on_start": true,
   "auto_update": true,
   "command_timeout": "30m",
-  "disabled_projects": {}
+  "enabled_projects": {
+    "/home/hq/docker-data/foo/docker-compose.yml": true
+  }
 }
 ```
 
-`disabled_projects` maps an absolute compose file path to `true` when it is excluded via the web UI. Mount `./config` (or any host dir) to `/config` to persist it.
+`enabled_projects` maps an absolute compose file path (as reported by Docker) to `true` when it is selected for scheduled updates. Mount `./config` (or any host dir) to `/config` to persist it.
 
 ## Behavior and safety
 
-- Recognizes `compose.yml`, `compose.yaml`, `docker-compose.yml`, and `docker-compose.yaml`.
-- Deduplicates Compose files when include roots overlap.
-- Excluded directories are skipped recursively, including when an excluded directory is itself an include root.
-- Skips projects with no running services.
+- Discovers running projects from Docker container labels (`com.docker.compose.project*.config_files`); no directory scan is needed to list them.
+- Only a project's **primary** compose file (first in `config_files`) is read; the running-project list still includes projects with multiple `-f` files.
+- Requires the compose file to be readable inside the container (mount its directory at the same absolute path) before it can be updated.
 - Only updates services that are currently running, have `image:`, and do not have `build:`.
 - Auto-detects the Compose implementation: `docker compose` (v2) is preferred, falling back to `docker-compose` (v1). Force one with `PREFER_COMPOSE=v1|v2`.
 - Records each running container's image ID, runs `compose pull <eligible services>`, then **only recreates services whose image ID actually changed**. Unchanged services are left untouched and the project is reported as "images unchanged, nothing to recreate".

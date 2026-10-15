@@ -22,17 +22,15 @@ func env(k, fallback string) string {
 // restarts and be edited through the web UI. Environment variables seed the
 // defaults when the file is absent; once the file exists, its values win.
 type Config struct {
-	IncludeDirs    []string `json:"include_dirs"`
-	ExcludeDirs    []string `json:"exclude_dirs"`
-	ScanDepth      int      `json:"scan_depth"`
-	CronSchedule   string   `json:"cron_schedule"`
-	Timezone       string   `json:"timezone"`
-	RunOnStart     *bool    `json:"run_on_start,omitempty"`
-	AutoUpdate     *bool    `json:"auto_update,omitempty"`
-	CommandTimeout string   `json:"command_timeout"`
-	// DisabledProjects maps an absolute compose file path to true when the user
-	// has excluded it from automatic updates via the web UI.
-	DisabledProjects map[string]bool `json:"disabled_projects"`
+	CronSchedule   string `json:"cron_schedule"`
+	Timezone       string `json:"timezone"`
+	RunOnStart     *bool  `json:"run_on_start,omitempty"`
+	AutoUpdate     *bool  `json:"auto_update,omitempty"`
+	CommandTimeout string `json:"command_timeout"`
+	// EnabledProjects lists the compose file paths (as reported by the Docker
+	// daemon) that participate in scheduled automatic updates. Projects not
+	// listed are discovered and visible in the UI but never updated on schedule.
+	EnabledProjects map[string]bool `json:"enabled_projects"`
 
 	mu   sync.Mutex
 	path string
@@ -76,23 +74,6 @@ func loadConfig() (*Config, error) {
 // normalize fills sane defaults and cleans path lists so the struct is always
 // usable regardless of what a hand-edited file contained.
 func (c *Config) normalize() {
-	if len(c.IncludeDirs) == 0 {
-		c.IncludeDirs = []string{"/stacks"}
-	}
-	clean := func(in []string) []string {
-		out := make([]string, 0, len(in))
-		for _, p := range in {
-			if p = filepath.Clean(p); p != "" && p != "." {
-				out = append(out, p)
-			}
-		}
-		return out
-	}
-	c.IncludeDirs = clean(c.IncludeDirs)
-	c.ExcludeDirs = clean(c.ExcludeDirs)
-	if c.ScanDepth < 0 {
-		c.ScanDepth = 0
-	}
 	if c.CronSchedule == "" {
 		c.CronSchedule = "0 */6 * * *"
 	}
@@ -102,8 +83,8 @@ func (c *Config) normalize() {
 	if c.CommandTimeout == "" {
 		c.CommandTimeout = "30m"
 	}
-	if c.DisabledProjects == nil {
-		c.DisabledProjects = map[string]bool{}
+	if c.EnabledProjects == nil {
+		c.EnabledProjects = map[string]bool{}
 	}
 }
 
@@ -128,34 +109,32 @@ func (c *Config) save() error {
 // snapshot returns a copy without the mutex, safe to marshal.
 func (c *Config) snapshot() *Config {
 	cp := &Config{
-		IncludeDirs:      c.IncludeDirs,
-		ExcludeDirs:      c.ExcludeDirs,
-		ScanDepth:        c.ScanDepth,
-		CronSchedule:     c.CronSchedule,
-		Timezone:         c.Timezone,
-		RunOnStart:       c.RunOnStart,
-		AutoUpdate:       c.AutoUpdate,
-		CommandTimeout:   c.CommandTimeout,
-		DisabledProjects: c.DisabledProjects,
+		CronSchedule:    c.CronSchedule,
+		Timezone:        c.Timezone,
+		RunOnStart:      c.RunOnStart,
+		AutoUpdate:      c.AutoUpdate,
+		CommandTimeout:  c.CommandTimeout,
+		EnabledProjects: c.EnabledProjects,
 	}
 	return cp
 }
 
-// ProjectEnabled reports whether a discovered compose file participates in
-// automatic updates.
+// ProjectEnabled reports whether a compose file participates in scheduled
+// automatic updates (i.e. it is selected in the allowlist).
 func (c *Config) ProjectEnabled(path string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return !c.DisabledProjects[path]
+	return c.EnabledProjects[path]
 }
 
-// SetProjectEnabled toggles automatic updates for a compose file and persists.
+// SetProjectEnabled adds or removes a compose file from the scheduled-update
+// allowlist and persists the change.
 func (c *Config) SetProjectEnabled(path string, enabled bool) error {
 	c.mu.Lock()
 	if enabled {
-		delete(c.DisabledProjects, path)
+		c.EnabledProjects[path] = true
 	} else {
-		c.DisabledProjects[path] = true
+		delete(c.EnabledProjects, path)
 	}
 	c.mu.Unlock()
 	return c.save()

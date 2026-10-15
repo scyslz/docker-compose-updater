@@ -9,18 +9,22 @@ services:
       # Web management UI.
       - "8080:8080"
     environment:
-      # Bootstrap settings only. Everything else (scan dirs, cron, toggles…) is
-      # edited in the web UI and stored in the config file below.
+      # Bootstrap settings only. Everything else (schedule, project selection…)
+      # is edited in the web UI and stored in the config file below.
       # Set WEB_ADDR to "off" to disable the UI.
       WEB_ADDR: ":8080"
       CONFIG_FILE: /config/updater.json
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       # Persistent, web-editable configuration. Copy config.example.json here
-      # as updater.json to seed the initial values.
+      # as updater.json to seed initial values.
       - ./config:/config
-      # Mount each host directory at the exact same absolute path used for the
-      # include dirs you configure in the UI. Read-only: the updater only scans
-      # compose files; Docker changes go through the socket.
-      - /data/docker:/data/docker:ro
-      - /opt/stacks:/opt/stacks:ro
+      # Mount the directories that contain your Compose projects at the SAME
+      # absolute path the Docker daemon reports, read-only. The updater needs
+      # to read the compose files to detect images/build; the running project
+      # list itself is discovered from Docker labels (no mount needed for that).
+      #
+      # Example: if `docker ps` labels show
+      #   com.docker.compose.project.config_files=/home/hq/docker-data/foo/docker-compose.yml
+      # then add:
+      - /home/hq/docker-data:/home/hq/docker-data:ro

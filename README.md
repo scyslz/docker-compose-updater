@@ -55,6 +55,7 @@ COMPOSE_AUTO_UPDATER_IMAGE=ghcr.io/scyslz/docker-compose-updater:latest
 - `RUN_ON_START`: run a scan immediately after startup; default `true`.
 - `AUTO_UPDATE`: `true` pulls and recreates eligible services; `false` only pulls. Default `true`.
 - `COMMAND_TIMEOUT`: timeout per Docker command; default `30m`.
+- `PREFER_COMPOSE`: force a Compose implementation. Unset (default) auto-detects `docker compose` (v2) first, then falls back to `docker-compose` (v1). Set to `v2` or `v1` to force one.
 
 ## Behavior and safety
 
@@ -63,7 +64,9 @@ COMPOSE_AUTO_UPDATER_IMAGE=ghcr.io/scyslz/docker-compose-updater:latest
 - Excluded directories are skipped recursively, including when an excluded directory is itself an include root.
 - Skips projects with no running services.
 - Only updates services that are currently running, have `image:`, and do not have `build:`.
-- Runs `docker compose pull <eligible services>`, then `docker compose up -d --no-deps --no-build --wait <eligible services>` when `AUTO_UPDATE=true`.
+- Auto-detects the Compose implementation: `docker compose` (v2) is preferred, falling back to `docker-compose` (v1). Force one with `PREFER_COMPOSE=v1|v2`.
+- Records each running container's image ID, runs `compose pull <eligible services>`, then **only recreates services whose image ID actually changed**. Unchanged services are left untouched and the project is reported as "images unchanged, nothing to recreate".
+- Recreates via `compose up -d --no-deps --no-build [--wait] <changed services>` when `AUTO_UPDATE=true`. `--wait` is added only on v2 (v1 has no `--wait`).
 - Does not call `docker stop`, `docker rm`, `docker compose down`, or `--remove-orphans`.
 - Does not update standalone containers just because they exist in Docker.
 

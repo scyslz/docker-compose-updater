@@ -12,7 +12,7 @@ environment:
   INCLUDE_DIRS: /data/docker,/opt/stacks
   EXCLUDE_DIRS: /data/docker/archive,/opt/stacks/manual
   SCAN_DEPTH: "5"
-  CRON_SCHEDULE: "0 4 * * *"
+  CRON_SCHEDULE: "0 */6 * * *"
   RUN_ON_START: "true"
   AUTO_UPDATE: "true"
 volumes:
@@ -24,7 +24,7 @@ volumes:
 Then run:
 
 ```sh
-docker compose up -d --build
+docker compose up -d
 docker logs -f compose-auto-updater
 ```
 
@@ -50,7 +50,7 @@ COMPOSE_AUTO_UPDATER_IMAGE=ghcr.io/scyslz/docker-compose-updater:latest
 - `INCLUDE_DIRS`: comma- or semicolon-separated scan roots inside the container. Default `/stacks` if not set. Every root must be mounted into the container. `SCAN_PATHS` is supported as a backward-compatible alias when `INCLUDE_DIRS` is unset.
 - `EXCLUDE_DIRS`: comma- or semicolon-separated directory paths to skip. Exclusions apply to the directory itself and all descendants. Paths are inside the container.
 - `SCAN_DEPTH`: maximum directory depth below each include root; default `5`. Set `0` to inspect only files directly in each root.
-- `CRON_SCHEDULE`: standard five-field Unix cron expression (`minute hour day-of-month month day-of-week`); default `0 4 * * *` (daily at 04:00 in `TZ`). Supports lists, ranges, steps, and month/day names, e.g. `*/15 * * * *`, `0 3 * * 1-5`, or `0 4 1 * *`.
+- `CRON_SCHEDULE`: standard five-field Unix cron expression (`minute hour day-of-month month day-of-week`); default `0 */6 * * *` (every 6 hours at minute 0, in `TZ`). Supports lists, ranges, steps, and month/day names, e.g. `*/15 * * * *`, `0 3 * * 1-5`, or `0 */6 * * *`.
 - `TZ`: timezone used for scheduling; default `Asia/Shanghai`.
 - `RUN_ON_START`: run a scan immediately after startup; default `true`.
 - `AUTO_UPDATE`: `true` pulls and recreates eligible services; `false` only pulls. Default `true`.

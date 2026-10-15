@@ -148,7 +148,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("invalid TZ %q: %v", zone, err)
 	}
-	cronExpr := env("CRON_SCHEDULE", "0 4 * * *")
+	cronExpr := env("CRON_SCHEDULE", "0 */6 * * *")
 	schedule, err := parseCron(cronExpr)
 	if err != nil {
 		log.Fatalf("invalid CRON_SCHEDULE %q: %v", cronExpr, err)

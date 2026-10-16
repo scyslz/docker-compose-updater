@@ -94,6 +94,22 @@ func (c composeCommand) withFile(file, sub string, rest ...string) []string {
 	return argv
 }
 
+// withProjectFile builds an argv with both `-p <project>` and `-f <file>`
+// global options. Passing the project name explicitly is required when the
+// project was started with a different name than Compose would derive from the
+// file's directory (e.g. `docker compose -p foo` or a differently named dir),
+// otherwise `ps`/`pull`/`up` target the wrong project and see no services.
+func (c composeCommand) withProjectFile(project, file, sub string, rest ...string) []string {
+	argv := []string{c.bin}
+	argv = append(argv, c.plugin...)
+	if project != "" {
+		argv = append(argv, "-p", project)
+	}
+	argv = append(argv, "-f", file, sub)
+	argv = append(argv, rest...)
+	return argv
+}
+
 // detectCompose picks the best available Compose implementation. PREFER_COMPOSE
 // may force "v2" or "v1". It returns an error when neither is usable.
 func detectCompose(ctx context.Context) (composeCommand, error) {
@@ -166,11 +182,11 @@ func selfContainerID() string {
 
 // runsSelf reports whether the given compose service is this updater's own
 // container, by comparing running container IDs for the project against selfID.
-func (u *updater) runsSelf(ctx context.Context, dir, file string, services []string) bool {
+func (u *updater) runsSelf(ctx context.Context, dir, project, file string, services []string) bool {
 	if u.selfID == "" {
 		return false
 	}
-	out, err := u.runCmd(ctx, dir, u.compose.withFile(file, "ps", append([]string{"-q"}, services...)...))
+	out, err := u.runCmd(ctx, dir, u.compose.withProjectFile(project, file, "ps", append([]string{"-q"}, services...)...))
 	if err != nil {
 		return false
 	}
@@ -187,8 +203,8 @@ func (u *updater) runsSelf(ctx context.Context, dir, file string, services []str
 // helper container so the operation survives the updater being recreated. It
 // mounts the Docker socket and the project working directory and runs the same
 // compose command with the same arguments.
-func (u *updater) selfUpdate(ctx context.Context, dir, file string, upArgs []string) error {
-	helper := selfUpdateHelperArgs(u.compose, dir, file, upArgs)
+func (u *updater) selfUpdate(ctx context.Context, dir, project, file string, upArgs []string) error {
+	helper := selfUpdateHelperArgs(u.compose, dir, project, file, upArgs)
 	log.Printf("self-update: launching detached helper: docker %s", strings.Join(helper, " "))
 	// Use a context detached from cancellation: the updater container will be
 	// recreated and this process may be stopped; the helper runs independently.
@@ -201,10 +217,13 @@ func (u *updater) selfUpdate(ctx context.Context, dir, file string, upArgs []str
 
 // selfUpdateHelperArgs builds the `docker run ...` argv for a detached helper
 // that performs a compose update independently of this container's lifecycle.
-func selfUpdateHelperArgs(cc composeCommand, dir, file string, upArgs []string) []string {
+func selfUpdateHelperArgs(cc composeCommand, dir, project, file string, upArgs []string) []string {
 	var inner []string
 	if cc.v2 {
 		inner = append(inner, "compose")
+	}
+	if project != "" {
+		inner = append(inner, "-p", project)
 	}
 	inner = append(inner, "-f", file, "up")
 	inner = append(inner, upArgs...)
@@ -431,7 +450,7 @@ func (u *updater) process(p composeProject, enabled, autoUpdate bool, trigger st
 	ctx, cancel := context.WithTimeout(context.Background(), u.timeout())
 	defer cancel()
 	log.Printf("project: %s (%s)", p.Project, file)
-	configOut, err := u.runCmd(ctx, dir, u.compose.withFile(file, "config", "--format", "json"))
+	configOut, err := u.runCmd(ctx, dir, u.compose.withProjectFile(p.Project, file, "config", "--format", "json"))
 	if err != nil {
 		res.Status, res.Detail = "failed", "compose config failed: "+err.Error()
 		log.Printf("skip %s: %v", p.Key(), res.Detail)
@@ -443,7 +462,7 @@ func (u *updater) process(p composeProject, enabled, autoUpdate bool, trigger st
 		log.Printf("skip %s: %v", p.Key(), res.Detail)
 		return res
 	}
-	psOut, err := u.runCmd(ctx, dir, u.compose.withFile(file, "ps", "--services", "--status", "running"))
+	psOut, err := u.runCmd(ctx, dir, u.compose.withProjectFile(p.Project, file, "ps", "--services", "--status", "running"))
 	if err != nil {
 		res.Status, res.Detail = "failed", "cannot list running services: "+err.Error()
 		log.Printf("skip %s: %v", p.Key(), res.Detail)
@@ -490,14 +509,14 @@ func (u *updater) process(p composeProject, enabled, autoUpdate bool, trigger st
 
 	// Record the image ID each running container currently uses, so we only
 	// recreate the services whose image actually changed after pulling.
-	before, err := u.containerImageIDs(ctx, dir, file, eligible)
+	before, err := u.containerImageIDs(ctx, dir, p.Project, file, eligible)
 	if err != nil {
 		res.Status, res.Detail = "failed", "cannot read current image IDs: "+err.Error()
 		log.Printf("skip %s: %v", p.Key(), res.Detail)
 		return res
 	}
 
-	if _, err := u.runCmdStream(ctx, dir, u.compose.withFile(file, "pull", eligible...), func(line string) {
+	if _, err := u.runCmdStream(ctx, dir, u.compose.withProjectFile(p.Project, file, "pull", eligible...), func(line string) {
 		u.progressLog(p.Key(), "pulling: "+line)
 	}); err != nil {
 		res.Status, res.Detail = "failed", "pull failed: "+err.Error()
@@ -523,10 +542,10 @@ func (u *updater) process(p composeProject, enabled, autoUpdate bool, trigger st
 		upArgs = append(upArgs, "--wait")
 	}
 	upArgs = append(upArgs, changed...)
-	if u.runsSelf(ctx, dir, file, changed) {
+	if u.runsSelf(ctx, dir, p.Project, file, changed) {
 		// The update includes this updater's own container: run it through a
 		// detached helper so it survives our recreation.
-		if err := u.selfUpdate(ctx, dir, file, upArgs); err != nil {
+		if err := u.selfUpdate(ctx, dir, p.Project, file, upArgs); err != nil {
 			res.Status, res.Detail = "failed", "self-update failed: "+err.Error()
 			log.Printf("SELF-UPDATE FAILED for %s: %v", p.Key(), err)
 			return res
@@ -535,7 +554,7 @@ func (u *updater) process(p composeProject, enabled, autoUpdate bool, trigger st
 		log.Printf("self-update started for %s", p.Key())
 		return res
 	}
-	if out, err := u.runCmd(ctx, dir, u.compose.withFile(file, "up", upArgs...)); err != nil {
+	if out, err := u.runCmd(ctx, dir, u.compose.withProjectFile(p.Project, file, "up", upArgs...)); err != nil {
 		res.Status, res.Detail = "failed", "update failed: "+err.Error()
 		log.Printf("UPDATE FAILED for %s: %v\n%s", p.Key(), err, strings.TrimSpace(string(out)))
 		return res
@@ -554,8 +573,8 @@ func (u *updater) checkAndUpdate(p composeProject) projectResult {
 // containerImageIDs returns, for each running service, the image ID of its
 // running container, keyed by compose service name. It uses the compose service
 // label so the mapping is exact even when image references include digests.
-func (u *updater) containerImageIDs(ctx context.Context, dir, file string, services []string) (map[string]string, error) {
-	out, err := u.runCmd(ctx, dir, u.compose.withFile(file, "ps", append([]string{"-q"}, services...)...))
+func (u *updater) containerImageIDs(ctx context.Context, dir, project, file string, services []string) (map[string]string, error) {
+	out, err := u.runCmd(ctx, dir, u.compose.withProjectFile(project, file, "ps", append([]string{"-q"}, services...)...))
 	if err != nil {
 		return nil, err
 	}

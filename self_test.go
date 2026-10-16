@@ -38,13 +38,13 @@ func TestClassifyServices(t *testing.T) {
 
 func TestSelfUpdateHelperArgsV2(t *testing.T) {
 	cc := composeCommand{bin: "docker", plugin: []string{"compose"}, v2: true, supports: true, display: "docker compose"}
-	args := selfUpdateHelperArgs(cc, "/srv/app", "/srv/app/compose.yaml",
+	args := selfUpdateHelperArgs(cc, "/srv/app", "myproj", "/srv/app/compose.yaml",
 		[]string{"-d", "--no-deps", "--no-build", "--wait", "web"})
 
 	got := strings.Join(args, " ")
 	want := "run --rm -d -v /var/run/docker.sock:/var/run/docker.sock " +
 		"-v /srv/app:/srv/app -w /srv/app docker:cli " +
-		"docker compose -f /srv/app/compose.yaml up -d --no-deps --no-build --wait web"
+		"docker compose -p myproj -f /srv/app/compose.yaml up -d --no-deps --no-build --wait web"
 	if got != want {
 		t.Fatalf("v2 helper args mismatch\n got: %s\nwant: %s", got, want)
 	}
@@ -52,13 +52,13 @@ func TestSelfUpdateHelperArgsV2(t *testing.T) {
 
 func TestSelfUpdateHelperArgsV1(t *testing.T) {
 	cc := composeCommand{bin: "docker-compose", v2: false, display: "docker-compose"}
-	args := selfUpdateHelperArgs(cc, "/srv/app", "/srv/app/compose.yaml",
+	args := selfUpdateHelperArgs(cc, "/srv/app", "myproj", "/srv/app/compose.yaml",
 		[]string{"-d", "--no-deps", "--no-build", "web"})
 
 	got := strings.Join(args, " ")
 	want := "run --rm -d -v /var/run/docker.sock:/var/run/docker.sock " +
 		"-v /srv/app:/srv/app -w /srv/app docker:cli " +
-		"docker-compose -f /srv/app/compose.yaml up -d --no-deps --no-build web"
+		"docker-compose -p myproj -f /srv/app/compose.yaml up -d --no-deps --no-build web"
 	if got != want {
 		t.Fatalf("v1 helper args mismatch\n got: %s\nwant: %s", got, want)
 	}

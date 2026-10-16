@@ -577,17 +577,24 @@ func (u *updater) runCmd(parent context.Context, dir string, argv []string) ([]b
 	defer cancel()
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = dir
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
+	// Keep stdout and stderr separate so diagnostics printed on stderr (e.g.
+	// Compose's "version is obsolete" warning) do not corrupt parsed stdout
+	// such as `compose config --format json`.
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
 	err := cmd.Run()
 	if ctx.Err() != nil {
-		return out.Bytes(), ctx.Err()
+		return stdout.Bytes(), ctx.Err()
 	}
 	if err != nil {
-		return out.Bytes(), fmt.Errorf("%s: %w: %s", strings.Join(argv, " "), err, strings.TrimSpace(out.String()))
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = strings.TrimSpace(stdout.String())
+		}
+		return stdout.Bytes(), fmt.Errorf("%s: %w: %s", strings.Join(argv, " "), err, msg)
 	}
-	return out.Bytes(), nil
+	return stdout.Bytes(), nil
 }
 
 // runCmdStream is like runCmd but reports progress: onProgress is called with

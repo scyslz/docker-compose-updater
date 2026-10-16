@@ -462,15 +462,13 @@ func (u *updater) process(p composeProject, enabled, autoUpdate bool, trigger st
 		return res
 	}
 	// Stopped project (manual check only; the scheduler never reaches here):
-	// pull current images for every image-based service so a later start uses
-	// updated images. Nothing is running, so nothing is recreated.
+	// pull current images and start it, so it comes up on the latest images.
 	if !p.Running {
 		all := map[string]bool{}
 		for name := range cfg.Services {
 			all[name] = true
 		}
 		eligible, buildOnly, _, noImage := classifyServices(cfg.Services, all)
-		res.Services = eligible
 		if len(eligible) == 0 {
 			res.Status = "skipped"
 			switch {
@@ -496,8 +494,22 @@ func (u *updater) process(p composeProject, enabled, autoUpdate bool, trigger st
 			log.Printf("pull failed for stopped %s: %v", p.Key(), err)
 			return res
 		}
-		res.Status, res.Detail = "pulled", "stopped project: images pulled for "+strings.Join(eligible, ", ")
-		log.Printf("pulled images for stopped project %s: %s", p.Key(), strings.Join(eligible, ", "))
+		// Start (create) the whole project on the freshly pulled images.
+		upArgs := []string{"-d", "--no-build"}
+		if u.compose.supports {
+			upArgs = append(upArgs, "--wait")
+		}
+		upArgs = append(upArgs, eligible...)
+		u.progressLog(p.Key(), "starting…")
+		if out, err := u.runCmd(ctx, dir, u.compose.withProjectFile(p.Project, file, "up", upArgs...)); err != nil {
+			res.Status, res.Detail = "failed", "start failed: "+err.Error()
+			log.Printf("START FAILED for stopped %s: %v\n%s", p.Key(), err, strings.TrimSpace(string(out)))
+			return res
+		}
+		res.Services = eligible
+		res.Updated = eligible
+		res.Status, res.Detail = "started", "stopped project: pulled and started "+strings.Join(eligible, ", ")
+		log.Printf("pulled and started stopped project %s: %s", p.Key(), strings.Join(eligible, ", "))
 		return res
 	}
 	psOut, err := u.runCmd(ctx, dir, u.compose.withProjectFile(p.Project, file, "ps", "--services", "--status", "running"))

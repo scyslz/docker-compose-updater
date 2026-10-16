@@ -401,7 +401,7 @@ function isNotUpdatable(p, r) {
 // only projects that were never checked show a dash.
 function updateStatusHtml(r) {
   switch (r.status) {
-    case 'updated': case 'pulled':
+    case 'updated': case 'pulled': case 'started':
       return `<span class="ustatus success">${esc(r.status)}</span>`;
     case 'unchanged':
       return '<span class="ustatus unchanged">unchanged</span>';

@@ -127,6 +127,7 @@ func startWeb(u *updater, addr string) {
 			return
 		}
 		p := composeProject{File: body.File, WorkingDir: body.WorkingDir, Project: body.Project, Mounted: fileReadable(body.File)}
+		p.Running = u.projectRunning(r.Context(), body.Project)
 		if _, ok := u.startLog(p, "manual"); !ok {
 			writeJSON(w, map[string]string{"status": "already-running"})
 			return
@@ -159,6 +160,7 @@ func startWeb(u *updater, addr string) {
 				continue
 			}
 			p := composeProject{File: it.File, WorkingDir: it.WorkingDir, Project: it.Project, Mounted: fileReadable(it.File)}
+			p.Running = u.projectRunning(r.Context(), it.Project)
 			if _, ok := u.startLog(p, "manual"); !ok {
 				skipped++
 				continue

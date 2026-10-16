@@ -515,15 +515,20 @@ function renderProjects() {
     const f = projectFields(p, r);
     if (!passesFilters(p, f)) continue;
     shown++;
+    const running = p.running !== false;
     const busy = r.status === 'running';
-    const btnDisabled = !p.mounted || busy;
+    const btnDisabled = !p.mounted || busy; // stopped projects remain manually updatable
     const btnLabel = busy ? 'Checking…' : 'Check &amp; update';
-    const toggle = toggleHtml(f.scheduled, !p.mounted, p.mounted ? '' : 'path not mounted');
+    const toggleDisabled = !p.mounted || !running;
+    const toggleTitle = !p.mounted ? 'path not mounted' : (!running ? 'not running — manual only' : '');
+    const toggle = toggleHtml(f.scheduled, toggleDisabled, toggleTitle);
+    const stateTag = (p.mounted ? '' : ' <span class="warn">— not mounted</span>')
+      + (running ? '' : ' <span class="muted">— stopped</span>');
 
     const tr = document.createElement('tr');
     tr.className = p.mounted ? '' : 'unmounted-row';
     tr.innerHTML = `
-      <td><code>${esc(p.project)}</code><div class="muted">${esc(p.file || '(no file)')}${p.mounted ? '' : ' <span class="warn">— not mounted</span>'}</div></td>
+      <td><code>${esc(p.project)}</code><div class="muted">${esc(p.file || '(no file)')}${stateTag}</div></td>
       <td>${f.updateStatusHtml}</td>
       <td class="lastcheck-cell">${f.lastCheck}</td>
       <td class="sched-cell">${toggle}<span class="toggle-label">${f.scheduled ? 'On' : 'Off'}</span></td>
@@ -539,7 +544,7 @@ function renderProjects() {
         <span class="card-title"><code>${esc(p.project)}</code></span>
         ${f.updateStatusHtml}
       </div>
-      <div class="card-path">${esc(p.file || '(no file)')}${p.mounted ? '' : ' — <span class="warn">not mounted</span>'}</div>
+      <div class="card-path">${esc(p.file || '(no file)')}${stateTag}</div>
       <div class="card-lastcheck">${f.lastCheck}</div>
       <div class="card-actions">
         <span class="toggle-wrap">${toggle}<span class="toggle-label">Scheduled</span></span>

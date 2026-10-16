@@ -348,13 +348,13 @@ func (u *updater) run() {
 		log.Printf("scan: cannot list running projects: %v", err)
 		return
 	}
-	log.Printf("scan started: found %d running Compose project(s)", len(projects))
-	results := make([]projectResult, 0, len(projects))
+	log.Printf("scan started: found %d Compose project(s)", len(projects))
 	for _, p := range projects {
-		// Projects not selected for scheduled updates, or not mounted (so their
-		// compose file cannot be read), are skipped without a check result: they
-		// keep no "last check" and produce no log entry.
-		if !u.cfg.ProjectEnabled(p.Key()) || !p.Mounted {
+		// The scheduler only processes running projects. Stopped projects (and
+		// those not selected for scheduled updates, or whose compose file is not
+		// mounted) are skipped without a check result: they keep no "last check"
+		// and produce no log entry. Stopped projects remain manually updatable.
+		if !p.Running || !u.cfg.ProjectEnabled(p.Key()) || !p.Mounted {
 			continue
 		}
 		if _, ok := u.startLog(p, "cron"); !ok {
@@ -362,11 +362,10 @@ func (u *updater) run() {
 		}
 		res := u.processProject(p, false, "cron")
 		u.finishLog(res)
-		results = append(results, res)
+		// Merge so results for projects not covered by this scan (e.g. stopped
+		// projects updated manually) are preserved.
+		u.recordResult(res)
 	}
-	u.mu.Lock()
-	u.lastResults = results
-	u.mu.Unlock()
 	log.Printf("scan finished in %s", time.Since(started).Round(time.Second))
 }
 
@@ -460,6 +459,45 @@ func (u *updater) process(p composeProject, enabled, autoUpdate bool, trigger st
 	if err := json.Unmarshal(configOut, &cfg); err != nil {
 		res.Status, res.Detail = "failed", "cannot parse compose config: "+err.Error()
 		log.Printf("skip %s: %v", p.Key(), res.Detail)
+		return res
+	}
+	// Stopped project (manual check only; the scheduler never reaches here):
+	// pull current images for every image-based service so a later start uses
+	// updated images. Nothing is running, so nothing is recreated.
+	if !p.Running {
+		all := map[string]bool{}
+		for name := range cfg.Services {
+			all[name] = true
+		}
+		eligible, buildOnly, _, noImage := classifyServices(cfg.Services, all)
+		res.Services = eligible
+		if len(eligible) == 0 {
+			res.Status = "skipped"
+			switch {
+			case len(buildOnly) > 0 && len(noImage) == 0:
+				res.Detail = "stopped; built locally (build:), nothing to pull: " + strings.Join(buildOnly, ", ")
+			default:
+				var parts []string
+				if len(buildOnly) > 0 {
+					parts = append(parts, "build-only: "+strings.Join(buildOnly, ", "))
+				}
+				if len(noImage) > 0 {
+					parts = append(parts, "no image: "+strings.Join(noImage, ", "))
+				}
+				res.Detail = "stopped; no image-based services to pull (" + strings.Join(parts, "; ") + ")"
+			}
+			log.Printf("skip %s: %v", p.Key(), res.Detail)
+			return res
+		}
+		if _, err := u.runCmdStream(ctx, dir, u.compose.withProjectFile(p.Project, file, "pull", eligible...), func(line string) {
+			u.progressLog(p.Key(), "pulling: "+line)
+		}); err != nil {
+			res.Status, res.Detail = "failed", "pull failed: "+err.Error()
+			log.Printf("pull failed for stopped %s: %v", p.Key(), err)
+			return res
+		}
+		res.Status, res.Detail = "pulled", "stopped project: images pulled for "+strings.Join(eligible, ", ")
+		log.Printf("pulled images for stopped project %s: %s", p.Key(), strings.Join(eligible, ", "))
 		return res
 	}
 	psOut, err := u.runCmd(ctx, dir, u.compose.withProjectFile(p.Project, file, "ps", "--services", "--status", "running"))

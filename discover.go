@@ -7,24 +7,29 @@ import (
 	"strings"
 )
 
-// composeProject describes a running Docker Compose project discovered from the
-// Docker daemon (no filesystem scan required to list it).
+// composeProject describes a Docker Compose project discovered from the Docker
+// daemon (no filesystem scan required to list it). Both running and stopped
+// projects are listed; the Running flag distinguishes them.
 type composeProject struct {
 	Project     string `json:"project"`      // com.docker.compose.project
 	File        string `json:"file"`         // primary compose file path (host view)
 	ConfigFiles string `json:"config_files"` // raw config_files label (may be comma-separated)
 	WorkingDir  string `json:"working_dir"`  // com.docker.compose.project.working_dir
 	Mounted     bool   `json:"mounted"`      // whether File is readable inside this container
+	Running     bool   `json:"running"`      // whether the project has any running container
 	Services    int    `json:"services"`     // number of running containers in the project
+	Total       int    `json:"total"`        // number of containers (running or stopped)
 }
 
-// discoverRunningProjects lists compose projects that currently have running
-// containers, by reading Docker container labels. It requires no directory
-// mounting; the "Mounted" flag reports whether the compose file is actually
-// readable inside this container.
+// discoverRunningProjects lists compose projects by reading Docker container
+// labels, including stopped ones. It requires no directory mounting; the
+// "Mounted" flag reports whether the compose file is readable inside this
+// container. Stopped projects are only updatable manually (the scheduler skips
+// them).
 func (u *updater) discoverRunningProjects(ctx context.Context) ([]composeProject, error) {
-	// Batch: get all running container IDs, then inspect their labels at once.
-	idsOut, err := u.runDocker(ctx, "", []string{"ps", "-q"})
+	// Inspect all containers (running and stopped) so stopped projects are
+	// listed too.
+	idsOut, err := u.runDocker(ctx, "", []string{"ps", "-aq"})
 	if err != nil {
 		return nil, err
 	}
@@ -40,7 +45,8 @@ func (u *updater) discoverRunningProjects(ctx context.Context) ([]composeProject
 
 	const format = `{{index .Config.Labels "com.docker.compose.project"}}|` +
 		`{{index .Config.Labels "com.docker.compose.project.config_files"}}|` +
-		`{{index .Config.Labels "com.docker.compose.project.working_dir"}}`
+		`{{index .Config.Labels "com.docker.compose.project.working_dir"}}|` +
+		`{{.State.Running}}`
 	inspectArgs := append([]string{"inspect", "--format", format}, ids...)
 	out, err := u.runDocker(ctx, "", inspectArgs)
 	if err != nil {
@@ -53,11 +59,11 @@ func (u *updater) discoverRunningProjects(ctx context.Context) ([]composeProject
 		if line == "" {
 			continue
 		}
-		parts := strings.SplitN(line, "|", 3)
-		if len(parts) != 3 || strings.TrimSpace(parts[0]) == "" {
+		parts := strings.SplitN(line, "|", 4)
+		if len(parts) != 4 || strings.TrimSpace(parts[0]) == "" {
 			continue // not a compose container
 		}
-		proj, configFiles, workdir := parts[0], parts[1], parts[2]
+		proj, configFiles, workdir, running := parts[0], parts[1], parts[2], parts[3]
 		key := proj + "\x00" + configFiles
 		p, ok := byKey[key]
 		if !ok {
@@ -71,7 +77,11 @@ func (u *updater) discoverRunningProjects(ctx context.Context) ([]composeProject
 			}
 			byKey[key] = p
 		}
-		p.Services++
+		p.Total++
+		if strings.TrimSpace(running) == "true" {
+			p.Running = true
+			p.Services++
+		}
 	}
 
 	projects := make([]composeProject, 0, len(byKey))
@@ -97,6 +107,19 @@ func primaryComposeFile(configFiles string) string {
 		}
 	}
 	return ""
+}
+
+// projectRunning reports whether the compose project currently has at least one
+// running container, by filtering on the project label.
+func (u *updater) projectRunning(ctx context.Context, project string) bool {
+	if strings.TrimSpace(project) == "" {
+		return false
+	}
+	out, err := u.runDocker(ctx, "", []string{"ps", "-q", "--filter", "label=com.docker.compose.project=" + project})
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) != ""
 }
 
 // fileReadable reports whether path exists and can be opened for reading.

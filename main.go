@@ -338,7 +338,7 @@ func (u *updater) run() {
 		if !u.cfg.ProjectEnabled(p.Key()) || !p.Mounted {
 			continue
 		}
-		if !u.startLog(p, "cron") {
+		if _, ok := u.startLog(p, "cron"); !ok {
 			continue
 		}
 		res := u.processProject(p, false, "cron")
@@ -351,9 +351,23 @@ func (u *updater) run() {
 	log.Printf("scan finished in %s", time.Since(started).Round(time.Second))
 }
 
-// projectResultNow builds a timestamped result for the current moment.
+// projectResultNow builds a timestamped result for the current moment. The
+// caller overrides When with the check start time when one is known.
 func nowResult(p composeProject, enabled bool) projectResult {
 	return projectResult{File: p.File, Project: p.Project, Enabled: enabled, When: time.Now().Format(time.RFC3339)}
+}
+
+// startTimeFor returns the start time recorded for an in-progress result of the
+// given file, or "" if none is in progress.
+func (u *updater) startTimeFor(file string) string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	for i := range u.lastResults {
+		if u.lastResults[i].File == file && u.lastResults[i].When != "" {
+			return u.lastResults[i].When
+		}
+	}
+	return ""
 }
 
 // timeout returns the configured per-command timeout.
@@ -393,6 +407,11 @@ func (u *updater) process(p composeProject, enabled, autoUpdate bool, trigger st
 	res := nowResult(p, enabled)
 	res.Trigger = trigger
 	res.logged = true
+	// Keep the start time recorded when this check began (from startLog) so the
+	// "last check" column reflects the start, not the completion.
+	if st := u.startTimeFor(p.File); st != "" {
+		res.When = st
+	}
 	log.Printf("[%s] checking %s (%s)", trigger, p.Project, p.File)
 	file := p.File
 	if file == "" {

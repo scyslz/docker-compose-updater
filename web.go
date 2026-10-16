@@ -127,7 +127,7 @@ func startWeb(u *updater, addr string) {
 			return
 		}
 		p := composeProject{File: body.File, WorkingDir: body.WorkingDir, Project: body.Project, Mounted: fileReadable(body.File)}
-		if !u.startLog(p, "manual") {
+		if _, ok := u.startLog(p, "manual"); !ok {
 			writeJSON(w, map[string]string{"status": "already-running"})
 			return
 		}
@@ -159,7 +159,7 @@ func startWeb(u *updater, addr string) {
 				continue
 			}
 			p := composeProject{File: it.File, WorkingDir: it.WorkingDir, Project: it.Project, Mounted: fileReadable(it.File)}
-			if !u.startLog(p, "manual") {
+			if _, ok := u.startLog(p, "manual"); !ok {
 				skipped++
 				continue
 			}
@@ -208,11 +208,14 @@ func (u *updater) recordResult(res projectResult) {
 }
 
 // startLog records the beginning of a check so the UI shows activity while a
-// (potentially slow) pull/update runs. It returns false when a check for the
-// same project is already in progress, so callers can skip the duplicate.
-func (u *updater) startLog(p composeProject, trigger string) bool {
+// (potentially slow) pull/update runs. It returns the start time when a new
+// check began, or ok=false when a check for the same project is already in
+// progress (so callers can skip the duplicate). The start time is also written
+// into the current result so the "last check" column updates immediately.
+func (u *updater) startLog(p composeProject, trigger string) (time.Time, bool) {
+	now := time.Now()
 	entry := checkLog{
-		When:    time.Now().Format(time.RFC3339),
+		When:    now.Format(time.RFC3339),
 		Trigger: trigger,
 		Project: p.Project,
 		File:    p.File,
@@ -224,15 +227,36 @@ func (u *updater) startLog(p composeProject, trigger string) bool {
 	for i := range u.logs {
 		if u.logs[i].File == p.File && u.logs[i].Status == "running" {
 			log.Printf("[%s] %s already being checked; ignoring duplicate trigger", trigger, p.Project)
-			return false
+			return time.Time{}, false
 		}
 	}
 	u.logs = append([]checkLog{entry}, u.logs...)
 	if len(u.logs) > maxCheckLogs {
 		u.logs = u.logs[:maxCheckLogs]
 	}
+	// Reflect the in-progress check in the result list immediately, so the
+	// "last check" time updates at the start (not after the run completes).
+	running := projectResult{
+		File:    p.File,
+		Project: p.Project,
+		Status:  "running",
+		Detail:  "checking…",
+		When:    now.Format(time.RFC3339),
+		Trigger: trigger,
+	}
+	replaced := false
+	for i := range u.lastResults {
+		if u.lastResults[i].File == p.File {
+			u.lastResults[i] = running
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		u.lastResults = append(u.lastResults, running)
+	}
 	log.Printf("[%s] checking %s (%s)", trigger, p.Project, p.File)
-	return true
+	return now, true
 }
 
 // progressLog appends output lines to the in-progress log entry for a project

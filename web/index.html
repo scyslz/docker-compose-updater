@@ -457,7 +457,7 @@ function filteredProjects() {
   const statusByFile = {};
   (state.results || []).forEach(r => statusByFile[r.file] = r);
   (state.logs || []).forEach(l => {
-    if (l.status === 'running' && l.file) statusByFile[l.file] = { file: l.file, status: 'running', detail: l.detail || 'checking…' };
+    if (l.status === 'running' && l.file) statusByFile[l.file] = { file: l.file, status: 'running', detail: l.detail || 'checking…', when: l.when };
   });
   const out = [];
   for (const p of (state.projects || [])) {
@@ -476,7 +476,7 @@ function renderProjects() {
   (state.results || []).forEach(r => statusByFile[r.file] = r);
   // Overlay any in-progress checks so the row shows "running".
   (state.logs || []).forEach(l => {
-    if (l.status === 'running' && l.file) statusByFile[l.file] = { file: l.file, status: 'running', detail: l.detail || 'checking…' };
+    if (l.status === 'running' && l.file) statusByFile[l.file] = { file: l.file, status: 'running', detail: l.detail || 'checking…', when: l.when };
   });
   const all = state.projects || [];
   let shown = 0;

@@ -28,6 +28,7 @@ type composeConfig struct {
 type updater struct {
 	cfg     *Config
 	compose composeCommand
+	selfID  string // this container's ID (short), if running inside Docker
 
 	mu          sync.Mutex
 	running     bool
@@ -137,6 +138,92 @@ func detectCompose(ctx context.Context) (composeCommand, error) {
 	return composeCommand{}, fmt.Errorf("no usable Compose found (need `docker compose` v2 or `docker-compose` v1)")
 }
 
+// selfContainerID returns this process's container ID (short) when running
+// inside Docker, or "" otherwise. It reads /proc/self/mountinfo, whose root
+// mount source contains the container ID, falling back to the hostname (Docker
+// sets the hostname to the container ID by default).
+func selfContainerID() string {
+	if data, err := os.ReadFile("/proc/self/mountinfo"); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			// Look for the cgroup/docker/<id> path segment.
+			if i := strings.Index(line, "/docker/"); i >= 0 {
+				rest := line[i+len("/docker/"):]
+				id := rest
+				if j := strings.IndexAny(rest, " /"); j >= 0 {
+					id = rest[:j]
+				}
+				if len(id) >= 12 {
+					return id[:12]
+				}
+			}
+		}
+	}
+	if h, err := os.Hostname(); err == nil && len(h) == 12 {
+		return h
+	}
+	return ""
+}
+
+// runsSelf reports whether the given compose service is this updater's own
+// container, by comparing running container IDs for the project against selfID.
+func (u *updater) runsSelf(ctx context.Context, dir, file string, services []string) bool {
+	if u.selfID == "" {
+		return false
+	}
+	out, err := u.runCmd(ctx, dir, u.compose.withFile(file, "ps", append([]string{"-q"}, services...)...))
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		id := strings.TrimSpace(line)
+		if id != "" && strings.HasPrefix(id, u.selfID) {
+			return true
+		}
+	}
+	return false
+}
+
+// selfUpdate runs `compose up` for the updater's own project via a detached
+// helper container so the operation survives the updater being recreated. It
+// mounts the Docker socket and the project working directory and runs the same
+// compose command with the same arguments.
+func (u *updater) selfUpdate(ctx context.Context, dir, file string, upArgs []string) error {
+	helper := selfUpdateHelperArgs(u.compose, dir, file, upArgs)
+	log.Printf("self-update: launching detached helper: docker %s", strings.Join(helper, " "))
+	// Use a context detached from cancellation: the updater container will be
+	// recreated and this process may be stopped; the helper runs independently.
+	out, err := u.runDocker(context.WithoutCancel(ctx), dir, helper)
+	if err != nil {
+		return fmt.Errorf("helper launch failed: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// selfUpdateHelperArgs builds the `docker run ...` argv for a detached helper
+// that performs a compose update independently of this container's lifecycle.
+func selfUpdateHelperArgs(cc composeCommand, dir, file string, upArgs []string) []string {
+	var inner []string
+	if cc.v2 {
+		inner = append(inner, "compose")
+	}
+	inner = append(inner, "-f", file, "up")
+	inner = append(inner, upArgs...)
+
+	helper := []string{
+		"run", "--rm", "-d",
+		"-v", "/var/run/docker.sock:/var/run/docker.sock",
+		"-v", dir + ":" + dir,
+		"-w", dir,
+		"docker:cli",
+	}
+	if cc.v2 {
+		helper = append(helper, "docker")
+	} else {
+		helper = append(helper, "docker-compose")
+	}
+	return append(helper, inner...)
+}
+
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.LUTC)
 
@@ -148,9 +235,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("compose not available: %v", err)
 	}
-	u := &updater{cfg: cfg, compose: cc}
-	log.Printf("compose-auto-updater started; compose=%s wait=%t auto_update=%t cron=%q tz=%s config=%s",
-		cc.display, cc.supports, cfg.AutoUpdateEnabled(), cfg.CronSchedule, cfg.Timezone, cfg.path)
+	u := &updater{cfg: cfg, compose: cc, selfID: selfContainerID()}
+	log.Printf("compose-auto-updater started; compose=%s wait=%t auto_update=%t cron=%q tz=%s config=%s self=%s",
+		cc.display, cc.supports, cfg.AutoUpdateEnabled(), cfg.CronSchedule, cfg.Timezone, cfg.path, u.selfID)
 
 	// Optional web management UI; disabled with WEB_ADDR=off.
 	go startWeb(u, env("WEB_ADDR", ":8080"))
@@ -355,27 +442,7 @@ func (u *updater) process(p composeProject, enabled, autoUpdate bool, trigger st
 		log.Printf("skip %s: %v", p.Key(), res.Detail)
 		return res
 	}
-	var eligible []string
-	var buildOnly, notRunning, noImage []string
-	for name, svc := range cfg.Services {
-		if !running[name] {
-			notRunning = append(notRunning, name)
-			continue
-		}
-		if hasBuild(svc.Build) {
-			buildOnly = append(buildOnly, name)
-			continue
-		}
-		if strings.TrimSpace(svc.Image) == "" {
-			noImage = append(noImage, name)
-			continue
-		}
-		eligible = append(eligible, name)
-	}
-	sort.Strings(eligible)
-	sort.Strings(buildOnly)
-	sort.Strings(noImage)
-	sort.Strings(notRunning)
+	eligible, buildOnly, notRunning, noImage := classifyServices(cfg.Services, running)
 	res.Services = eligible
 	if len(eligible) == 0 {
 		res.Status = "skipped"
@@ -437,6 +504,18 @@ func (u *updater) process(p composeProject, enabled, autoUpdate bool, trigger st
 		upArgs = append(upArgs, "--wait")
 	}
 	upArgs = append(upArgs, changed...)
+	if u.runsSelf(ctx, dir, file, changed) {
+		// The update includes this updater's own container: run it through a
+		// detached helper so it survives our recreation.
+		if err := u.selfUpdate(ctx, dir, file, upArgs); err != nil {
+			res.Status, res.Detail = "failed", "self-update failed: "+err.Error()
+			log.Printf("SELF-UPDATE FAILED for %s: %v", p.Key(), err)
+			return res
+		}
+		res.Status, res.Detail = "updated", "self-update started (detached): "+strings.Join(changed, ", ")
+		log.Printf("self-update started for %s", p.Key())
+		return res
+	}
 	if out, err := u.runCmd(ctx, dir, u.compose.withFile(file, "up", upArgs...)); err != nil {
 		res.Status, res.Detail = "failed", "update failed: "+err.Error()
 		log.Printf("UPDATE FAILED for %s: %v\n%s", p.Key(), err, strings.TrimSpace(string(out)))
@@ -484,6 +563,34 @@ func (u *updater) containerImageIDs(ctx context.Context, dir, file string, servi
 		}
 	}
 	return result, nil
+}
+
+// classifyServices splits a project's services into update-eligible and
+// ineligible buckets based on the compose config and which services are
+// running. A service with an explicit image reference is eligible even if it
+// also declares a build section (docker compose uses the image tag as the build
+// result name); only build-without-image services cannot be updated.
+func classifyServices(services map[string]serviceConfig, running map[string]bool) (eligible, buildOnly, notRunning, noImage []string) {
+	for name, svc := range services {
+		if !running[name] {
+			notRunning = append(notRunning, name)
+			continue
+		}
+		if strings.TrimSpace(svc.Image) == "" {
+			if hasBuild(svc.Build) {
+				buildOnly = append(buildOnly, name)
+			} else {
+				noImage = append(noImage, name)
+			}
+			continue
+		}
+		eligible = append(eligible, name)
+	}
+	sort.Strings(eligible)
+	sort.Strings(buildOnly)
+	sort.Strings(noImage)
+	sort.Strings(notRunning)
+	return
 }
 
 // changedServices compares each service's currently running container image ID

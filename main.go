@@ -186,7 +186,13 @@ func (u *updater) runsSelf(ctx context.Context, dir, project, file string, servi
 	if u.selfID == "" {
 		return false
 	}
-	out, err := u.runCmd(ctx, dir, u.compose.withProjectFile(project, file, "ps", append([]string{"-q"}, services...)...))
+	var out []byte
+	var err error
+	if project != "" {
+		out, err = u.runDocker(ctx, "", []string{"ps", "-q", "--filter", "label=com.docker.compose.project=" + project})
+	} else {
+		out, err = u.runCmd(ctx, dir, u.compose.withProjectFile(project, file, "ps", append([]string{"-q"}, services...)...))
+	}
 	if err != nil {
 		return false
 	}
@@ -512,19 +518,34 @@ func (u *updater) process(p composeProject, enabled, autoUpdate bool, trigger st
 		log.Printf("pulled and started stopped project %s: %s", p.Key(), strings.Join(eligible, ", "))
 		return res
 	}
-	psOut, err := u.runCmd(ctx, dir, u.compose.withProjectFile(p.Project, file, "ps", "--services", "--status", "running"))
-	if err != nil {
-		res.Status, res.Detail = "failed", "cannot list running services: "+err.Error()
-		log.Printf("skip %s: %v", p.Key(), res.Detail)
-		return res
-	}
+	// Determine running services from container labels (profile- and
+	// compose-file-agnostic), falling back to `compose ps`.
 	running := map[string]bool{}
-	for _, s := range strings.Split(string(psOut), "\n") {
-		s = strings.TrimSpace(s)
-		if s != "" {
-			running[s] = true
+	if p.Project != "" {
+		fromLabels, err := u.runningServices(ctx, p.Project)
+		if err != nil {
+			res.Status, res.Detail = "failed", "cannot list running services: "+err.Error()
+			log.Printf("skip %s: %v", p.Key(), res.Detail)
+			return res
+		}
+		for k := range fromLabels {
+			running[k] = true
 		}
 	}
+	if len(running) == 0 {
+		psOut, err := u.runCmd(ctx, dir, u.compose.withProjectFile(p.Project, file, "ps", "--services", "--status", "running"))
+		if err != nil {
+			res.Status, res.Detail = "failed", "cannot list running services: "+err.Error()
+			log.Printf("skip %s: %v", p.Key(), res.Detail)
+			return res
+		}
+		for _, s := range strings.Split(string(psOut), "\n") {
+			if s = strings.TrimSpace(s); s != "" {
+				running[s] = true
+			}
+		}
+	}
+	log.Printf("%s: compose services=%s running=%s", p.Key(), serviceNames(cfg.Services), nameList(running))
 	if len(running) == 0 {
 		res.Status, res.Detail = "skipped", "no running Compose services"
 		log.Printf("skip %s: %v", p.Key(), res.Detail)
@@ -624,12 +645,20 @@ func (u *updater) checkAndUpdate(p composeProject) projectResult {
 // running container, keyed by compose service name. It uses the compose service
 // label so the mapping is exact even when image references include digests.
 func (u *updater) containerImageIDs(ctx context.Context, dir, project, file string, services []string) (map[string]string, error) {
-	out, err := u.runCmd(ctx, dir, u.compose.withProjectFile(project, file, "ps", append([]string{"-q"}, services...)...))
+	// Prefer container labels (profile-agnostic); fall back to compose ps when
+	// the project name is unknown.
+	var idsOut []byte
+	var err error
+	if project != "" {
+		idsOut, err = u.runDocker(ctx, "", []string{"ps", "-q", "--filter", "label=com.docker.compose.project=" + project})
+	} else {
+		idsOut, err = u.runCmd(ctx, dir, u.compose.withProjectFile(project, file, "ps", append([]string{"-q"}, services...)...))
+	}
 	if err != nil {
 		return nil, err
 	}
 	var ids []string
-	for _, line := range strings.Split(string(out), "\n") {
+	for _, line := range strings.Split(string(idsOut), "\n") {
 		if id := strings.TrimSpace(line); id != "" {
 			ids = append(ids, id)
 		}
@@ -640,7 +669,7 @@ func (u *updater) containerImageIDs(ctx context.Context, dir, project, file stri
 	}
 	inspectArgs := append([]string{"inspect", "--format",
 		`{{.Config.Image}} {{index .Config.Labels "com.docker.compose.service"}} {{.Image}}`}, ids...)
-	out, err = u.runDocker(ctx, dir, inspectArgs)
+	out, err := u.runDocker(ctx, dir, inspectArgs)
 	if err != nil {
 		return nil, err
 	}
@@ -651,6 +680,26 @@ func (u *updater) containerImageIDs(ctx context.Context, dir, project, file stri
 		}
 	}
 	return result, nil
+}
+
+// serviceNames returns a sorted, comma-joined list of service names.
+func serviceNames(services map[string]serviceConfig) string {
+	names := make([]string, 0, len(services))
+	for n := range services {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ",")
+}
+
+// nameList returns a sorted, comma-joined list of the set's keys.
+func nameList(set map[string]bool) string {
+	names := make([]string, 0, len(set))
+	for n := range set {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ",")
 }
 
 // classifyServices splits a project's services into update-eligible and

@@ -122,6 +122,26 @@ func (u *updater) projectRunning(ctx context.Context, project string) bool {
 	return strings.TrimSpace(string(out)) != ""
 }
 
+// runningServices returns the set of compose service names that currently have a
+// running container in the project, derived from container labels. This is more
+// robust than `compose ps`, which omits services behind optional profiles and
+// depends on the compose file matching the running containers.
+func (u *updater) runningServices(ctx context.Context, project string) (map[string]bool, error) {
+	out, err := u.runDocker(ctx, "", []string{"ps",
+		"--filter", "label=com.docker.compose.project=" + project,
+		"--format", `{{.Label "com.docker.compose.service"}}`})
+	if err != nil {
+		return nil, err
+	}
+	services := map[string]bool{}
+	for _, line := range strings.Split(string(out), "\n") {
+		if name := strings.TrimSpace(line); name != "" {
+			services[name] = true
+		}
+	}
+	return services, nil
+}
+
 // fileReadable reports whether path exists and can be opened for reading.
 func fileReadable(path string) bool {
 	f, err := os.Open(path)

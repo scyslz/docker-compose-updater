@@ -5,39 +5,209 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Compose Auto Updater</title>
 <style>
-  :root { color-scheme: light dark; }
+  :root {
+    color-scheme: light dark;
+    --bg: #f4f5f7;
+    --card: #ffffff;
+    --border: #e2e5ea;
+    --text: #1c1f26;
+    --muted: #667085;
+    --input-bg: #ffffff;
+    --code-bg: #f0f1f4;
+    --accent: #2563eb;
+    --accent-text: #ffffff;
+    --secondary-border: #cfd4dd;
+    --secondary-text: #3a4150;
+    --shadow: 0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.1);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115;
+      --card: #171a21;
+      --border: #2a2f3a;
+      --text: #e6e6e6;
+      --muted: #8b93a3;
+      --input-bg: #0b0d12;
+      --code-bg: #0b0d12;
+      --accent: #2f6feb;
+      --accent-text: #ffffff;
+      --secondary-border: #3a4150;
+      --secondary-text: #cbd3e0;
+      --shadow: none;
+    }
+  }
   * { box-sizing: border-box; }
-  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; background: #0f1115; color: #e6e6e6; }
-  header { padding: 16px 24px; background: #171a21; border-bottom: 1px solid #2a2f3a; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
-  header h1 { font-size: 18px; margin: 0; }
-  .muted { color: #8b93a3; font-size: 13px; }
-  main { padding: 24px; max-width: 1200px; margin: 0 auto; }
-  section { background: #171a21; border: 1px solid #2a2f3a; border-radius: 10px; padding: 18px; margin-bottom: 20px; }
+  html, body { max-width: 100%; overflow-x: hidden; }
+  body {
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    margin: 0; background: var(--bg); color: var(--text);
+    -webkit-text-size-adjust: 100%;
+  }
+  header {
+    padding: 14px 20px; background: var(--card);
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  }
+  header h1 { font-size: 17px; margin: 0; }
+  .muted { color: var(--muted); font-size: 13px; }
+  main { padding: 20px; max-width: 1200px; margin: 0 auto; }
+  section {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 18px; margin-bottom: 18px; box-shadow: var(--shadow);
+  }
   h2 { font-size: 15px; margin: 0 0 14px; }
-  table { width: 100%; border-collapse: collapse; font-size: 14px; }
-  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #232833; vertical-align: top; }
-  th { color: #9aa3b2; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
-  tr:last-child td { border-bottom: none; }
-  code { background: #0b0d12; padding: 2px 6px; border-radius: 5px; font-size: 12.5px; }
-  input[type=text], input[type=number] { width: 100%; padding: 7px 9px; background: #0b0d12; color: #e6e6e6; border: 1px solid #2a2f3a; border-radius: 6px; font-family: inherit; }
-  button { padding: 8px 14px; border-radius: 7px; border: 1px solid #2f6feb; background: #2f6feb; color: #fff; font-weight: 600; cursor: pointer; font-family: inherit; }
-  button.secondary { background: transparent; color: #cbd3e0; border-color: #3a4150; }
-  button.small { padding: 5px 10px; font-size: 12.5px; }
+  code { background: var(--code-bg); padding: 2px 6px; border-radius: 5px; font-size: 12.5px; word-break: break-all; }
+  input[type=text], input[type=number] {
+    width: 100%; padding: 8px 10px; background: var(--input-bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; font-family: inherit; font-size: 15px;
+  }
+  button {
+    padding: 8px 14px; border-radius: 7px; border: 1px solid var(--accent);
+    background: var(--accent); color: var(--accent-text); font-weight: 600;
+    cursor: pointer; font-family: inherit; font-size: 14px;
+  }
+  button.secondary { background: transparent; color: var(--secondary-text); border-color: var(--secondary-border); }
+  button.small { padding: 6px 10px; font-size: 12.5px; }
   button:disabled { opacity: .5; cursor: not-allowed; }
   .row { display: flex; gap: 16px; flex-wrap: wrap; }
-  .row > label { flex: 1 1 200px; display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: #9aa3b2; }
-  .switch { display: inline-flex; align-items: center; gap: 8px; }
+  .row > label { flex: 1 1 200px; min-width: 0; display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
+  .switch { display: inline-flex; align-items: center; gap: 8px; color: var(--text); font-size: 14px; }
   .status { padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; white-space: nowrap; }
-  .status.updated { background: #17351f; color: #6ee7a0; }
-  .status.unchanged { background: #2a2f3a; color: #b8c0cf; }
-  .status.skipped { background: #33301a; color: #e6d78a; }
-  .status.failed { background: #3a1c1c; color: #f0a1a1; }
-  .status.pulled { background: #1c2a3a; color: #8fc4f0; }
-  .status.unmounted { background: #3a2a1c; color: #f0c08a; }
-  .actions { display: flex; gap: 10px; align-items: center; }
-  .toast { position: fixed; bottom: 20px; right: 20px; background: #1f2530; border: 1px solid #2a2f3a; padding: 12px 16px; border-radius: 8px; opacity: 0; transition: opacity .2s; }
+  .status.updated { background: #d1fae5; color: #065f46; }
+  .status.unchanged { background: #e5e7eb; color: #374151; }
+  .status.skipped { background: #fef3c7; color: #854d0e; }
+  .status.failed { background: #fee2e2; color: #991b1b; }
+  .status.pulled { background: #dbeafe; color: #1e40af; }
+  .status.unmounted { background: #ffedd5; color: #9a3412; }
+  .status.running { background: #e0e7ff; color: #3730a3; animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .55; } }
+  @media (prefers-color-scheme: dark) {
+    .status.updated { background: #17351f; color: #6ee7a0; }
+    .status.unchanged { background: #2a2f3a; color: #b8c0cf; }
+    .status.skipped { background: #33301a; color: #e6d78a; }
+    .status.failed { background: #3a1c1c; color: #f0a1a1; }
+    .status.pulled { background: #1c2a3a; color: #8fc4f0; }
+    .status.unmounted { background: #3a2a1c; color: #f0c08a; }
+    .status.running { background: #1e2748; color: #a5b4fc; }
+  }
+  .actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .toast {
+    position: fixed; bottom: 20px; right: 20px; left: 20px; max-width: 360px; margin-left: auto;
+    background: var(--card); border: 1px solid var(--border); padding: 12px 16px;
+    border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none;
+    box-shadow: var(--shadow); z-index: 50;
+  }
   .toast.show { opacity: 1; }
-  .warn { color: #f0c08a; }
+  .warn { color: #b45309; font-size: 13px; }
+  @media (prefers-color-scheme: dark) { .warn { color: #f0c08a; } }
+
+  /* Projects: table on desktop, cards on mobile */
+  .filters { margin-bottom: 14px; }
+  .filter-row { display: flex; gap: 14px; flex-wrap: wrap; align-items: end; }
+  .filter { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--muted); }
+  .filter select, .filter input { padding: 6px 9px; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; font-family: inherit; font-size: 13px; }
+  .filter input { width: 200px; }
+  #runFilteredBtn { margin-left: auto; align-self: end; }
+  .filter-summary { font-size: 12px; margin-top: 8px; }
+  .proj-scroll { height: 58vh; min-height: 220px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; }
+  .proj-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  .proj-table th, .proj-table td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .proj-table th { position: sticky; top: 0; background: var(--card); color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; z-index: 1; }
+  .proj-table tr:last-child td { border-bottom: none; }
+  .sched-cell { white-space: nowrap; }
+  .lastcheck { font-size: 12px; margin-top: 4px; }
+  .lastcheck span { font-size: 12px; }
+  tr.unmounted-row { opacity: .55; }
+
+  /* Toggle switch */
+  .toggle { position: relative; display: inline-block; width: 42px; height: 24px; vertical-align: middle; }
+  .toggle input { opacity: 0; width: 0; height: 0; }
+  .toggle .slider { position: absolute; inset: 0; background: var(--border); border-radius: 999px; transition: background .15s; cursor: pointer; }
+  .toggle .slider::before { content: ""; position: absolute; height: 18px; width: 18px; left: 3px; top: 3px; background: #fff; border-radius: 50%; transition: transform .15s; }
+  .toggle input:checked + .slider { background: var(--accent); }
+  .toggle input:checked + .slider::before { transform: translateX(18px); }
+  .toggle input:disabled + .slider { opacity: .5; cursor: not-allowed; }
+  .toggle-label { font-size: 12px; color: var(--muted); margin-left: 6px; vertical-align: middle; }
+
+  /* Status column (update result only) */
+  .ustatus { padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+  .ustatus.success { background: #d1fae5; color: #065f46; }
+  .ustatus.fail { background: #fee2e2; color: #991b1b; }
+  .ustatus.running { background: #e0e7ff; color: #3730a3; animation: pulse 1.2s ease-in-out infinite; }
+  .ustatus.unchanged { background: #e5e7eb; color: #374151; }
+  .ustatus.skipped { background: #fef3c7; color: #854d0e; }
+  .ustatus.none { background: transparent; color: var(--muted); }
+  .lastcheck-cell { font-size: 12px; color: var(--muted); white-space: nowrap; }
+  @media (prefers-color-scheme: dark) {
+    .ustatus.success { background: #17351f; color: #6ee7a0; }
+    .ustatus.unchanged { background: #2a2f3a; color: #b8c0cf; }
+    .ustatus.skipped { background: #33301a; color: #e6d78a; }
+    .ustatus.fail { background: #3a1c1c; color: #f0a1a1; }
+    .ustatus.running { background: #1e2748; color: #a5b4fc; }
+  }
+
+  /* Check log */
+  .log-scroll { height: 40vh; min-height: 160px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; }
+  .log-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .log-table th, .log-table td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border); vertical-align: top; overflow-wrap: anywhere; word-break: break-word; white-space: normal; }
+  .log-table td.detail-cell { color: var(--muted); }
+  .detail-inner { max-height: 12em; overflow-y: auto; white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; }
+  .log-table th { position: sticky; top: 0; background: var(--card); color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+  .log-table tr:last-child td { border-bottom: none; }
+  .log-cards { display: none; }
+  .status.manual { background: #ede9fe; color: #5b21b6; }
+  .status.cron { background: #e0f2fe; color: #075985; }
+  @media (prefers-color-scheme: dark) {
+    .status.manual { background: #2a2140; color: #c4b5fd; }
+    .status.cron { background: #10283a; color: #7dd3fc; }
+  }
+  .proj-cards { display: none; }
+
+  @media (max-width: 640px) {
+    header { padding: 12px 14px; }
+    main { padding: 12px; }
+    section { padding: 14px; border-radius: 12px; }
+    .filter-row { gap: 8px; align-items: center; }
+    .filter { font-size: 11px; }
+    .filter select { flex: 0 0 auto; }
+    .filter input { width: auto; min-width: 0; }
+    .filter-search { flex: 1 1 100px; }
+    .filter-search input { width: 100%; }
+    #runFilteredBtn { margin-left: 0; align-self: auto; }
+    .filter-summary { text-align: right; }
+    .proj-scroll { display: none; }
+    .proj-cards { display: flex; flex-direction: column; gap: 12px; height: 60vh; min-height: 220px; overflow-y: auto; }
+    .proj-card {
+      border: 1px solid var(--border); border-radius: 10px; padding: 14px;
+      display: flex; flex-direction: column; gap: 12px; background: var(--card);
+    }
+    .proj-card .card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .proj-card .card-title { font-weight: 600; font-size: 15px; }
+    .proj-card .card-title code { background: none; padding: 0; font-size: 15px; }
+    .proj-card .card-path {
+      color: var(--muted); font-size: 12px; margin-top: -6px;
+      overflow-wrap: anywhere; word-break: break-all;
+    }
+    .proj-card.disabled { opacity: .55; }
+    .proj-card .card-lastcheck { font-size: 12px; margin-top: -4px; }
+    .proj-card .card-actions {
+      display: flex; gap: 10px; align-items: center; padding-top: 2px;
+      border-top: 1px solid var(--border);
+    }
+    .proj-card .card-actions label.switch { flex: 1; font-size: 13.5px; min-height: 40px; }
+    .proj-card .card-actions .toggle-wrap { flex: 1; display: flex; align-items: center; }
+    .proj-card .card-actions button { flex: none; white-space: nowrap; }
+    .log-scroll { display: none; }
+    .log-cards { display: flex; flex-direction: column; gap: 10px; height: 40vh; min-height: 160px; overflow-y: auto; }
+    .log-card {
+      border: 1px solid var(--border); border-radius: 10px; padding: 12px;
+      display: flex; flex-direction: column; gap: 6px; background: var(--card);
+    }
+    .log-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .log-card-head code { background: none; padding: 0; font-size: 14px; }
+    .log-card-meta { font-size: 12px; color: var(--muted); }
+    .log-card-detail { font-size: 11.5px; overflow-wrap: anywhere; max-height: 12em; overflow-y: auto; white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  }
 </style>
 </head>
 <body>
@@ -46,10 +216,61 @@
   <span class="muted" id="meta"></span>
   <span style="flex:1"></span>
   <div class="actions">
-    <button id="runBtn" class="secondary">Scan all now</button>
+    <button id="runBtn" class="secondary">Run cron</button>
   </div>
 </header>
 <main>
+  <section>
+    <h2>Running projects</h2>
+    <div class="muted" style="margin-bottom:12px">
+      Projects currently running in Docker. Toggle a project to include it in the <strong>scheduled</strong> update,
+      or use <strong>Check &amp; update</strong> to update just that project now.
+    </div>
+    <div class="filters">
+      <div class="filter-row">
+        <label class="filter">Update
+          <select id="filterUpdate">
+            <option value="all">All</option>
+            <option value="eligible">Updatable</option>
+            <option value="ineligible">Not updatable</option>
+          </select>
+        </label>
+        <label class="filter">Cron
+          <select id="filterCron">
+            <option value="all">All</option>
+            <option value="on">Enabled</option>
+            <option value="off">Disabled</option>
+          </select>
+        </label>
+        <label class="filter filter-search">Search
+          <input type="text" id="filterSearch" placeholder="project or path">
+        </label>
+        <button id="runFilteredBtn" class="secondary small">Run all</button>
+      </div>
+      <div class="filter-summary muted" id="filterSummary"></div>
+    </div>
+    <div class="proj-scroll">
+      <table class="proj-table">
+        <thead><tr><th>Project / file</th><th style="width:110px">Status</th><th style="width:170px">Last check</th><th style="width:130px">Scheduled</th><th style="width:160px">Actions</th></tr></thead>
+        <tbody id="projects"></tbody>
+      </table>
+    </div>
+    <div class="proj-cards" id="projectsCards"></div>
+    <div id="scanError" class="warn" style="margin-top:10px"></div>
+  </section>
+
+  <section>
+    <h2>Check log</h2>
+    <div class="muted" style="margin-bottom:12px">Recent checks triggered manually or by the scheduler.</div>
+    <div class="log-scroll" data-scrollkey="logs-outer">
+      <table class="log-table">
+        <thead><tr><th style="width:150px">Time</th><th style="width:80px">Trigger</th><th>Project</th><th style="width:90px">Result</th><th>Detail</th></tr></thead>
+        <tbody id="logs"></tbody>
+      </table>
+    </div>
+    <div class="log-cards" id="logsCards"></div>
+  </section>
+
   <section>
     <h2>Schedule</h2>
     <div class="row">
@@ -64,26 +285,12 @@
       </label>
     </div>
     <div class="row" style="margin-top:14px">
-      <label>Options</label>
-      <div style="flex:1 1 200px; display:flex; flex-direction:column; gap:8px; padding-top:20px">
+      <div style="flex:1 1 200px; display:flex; flex-direction:column; gap:8px">
         <label class="switch"><input type="checkbox" id="autoUpdate"> Global auto update (recreate changed services)</label>
         <label class="switch"><input type="checkbox" id="runOnStart"> Run on start</label>
       </div>
     </div>
     <div style="margin-top:16px"><button id="saveBtn">Save configuration</button></div>
-  </section>
-
-  <section>
-    <h2>Running projects</h2>
-    <div class="muted" style="margin-bottom:12px">
-      Projects currently running in Docker. Tick a project to include it in the <strong>scheduled</strong> update,
-      or use <strong>Check &amp; update</strong> to update just that project now.
-    </div>
-    <table>
-      <thead><tr><th style="width:70px">Scheduled</th><th>Project / file</th><th>Status</th><th>Detail</th><th style="width:150px"></th></tr></thead>
-      <tbody id="projects"></tbody>
-    </table>
-    <div id="scanError" class="warn" style="margin-top:10px"></div>
   </section>
 </main>
 <div class="toast" id="toast"></div>
@@ -94,6 +301,31 @@ let state = null;
 function toast(msg) {
   const t = $('toast'); t.textContent = msg; t.classList.add('show');
   setTimeout(() => t.classList.remove('show'), 2500);
+}
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// Preserve scroll positions of scrollable boxes across re-renders. Keyed by a
+// stable scrollkey attribute so the same logical box keeps its position.
+// If the box was scrolled to (near) the bottom, it stays pinned to the bottom
+// so streaming output keeps following.
+function snapshotScroll() {
+  const m = {};
+  document.querySelectorAll('[data-scrollkey]').forEach(el => {
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 8;
+    m[el.getAttribute('data-scrollkey')] = { top: el.scrollTop, atBottom };
+  });
+  return m;
+}
+function restoreScroll(m) {
+  document.querySelectorAll('[data-scrollkey]').forEach(el => {
+    const k = el.getAttribute('data-scrollkey');
+    const saved = m[k];
+    if (!saved) return;
+    if (saved.atBottom) el.scrollTop = el.scrollHeight;
+    else el.scrollTop = saved.top;
+  });
 }
 
 async function load() {
@@ -109,42 +341,224 @@ async function load() {
     + (state.next_run ? ' · next: ' + state.next_run : '')
     + (state.last_run ? ' · last: ' + state.last_run : '');
   $('scanError').textContent = state.scan_error ? 'Error listing projects: ' + state.scan_error : '';
+  const scrollMemo = snapshotScroll();
   renderProjects();
+  renderLogs();
+  restoreScroll(scrollMemo);
 }
 
-function renderProjects() {
-  const body = $('projects'); body.innerHTML = '';
+function statusHtml(r) {
+  return r.status ? `<span class="status ${esc(r.status)}">${esc(r.status)}</span>` : '';
+}
+function fmtTime(s) {
+  if (!s) return '';
+  const d = new Date(s);
+  if (isNaN(d)) return s;
+  return d.toLocaleString();
+}
+function lastCheckHtml(r) {
+  if (!r.when) return '';
+  return esc(fmtTime(r.when));
+}
+// A project is "not updatable" only when a check definitively reported that it
+// has no image-based services (build-only / no image). A "skipped: not selected
+// for scheduled updates" result says nothing about updatability.
+function isNotUpdatable(p, r) {
+  if (!p.mounted) return true;
+  return r.status === 'skipped' && /build|no image/i.test(r.detail || '');
+}
+// Map a raw result status to the compact update-status column. A project with a
+// result was actually checked (cron or manual), so it always shows a status;
+// only projects that were never checked show a dash.
+function updateStatusHtml(r) {
+  switch (r.status) {
+    case 'updated': case 'pulled':
+      return `<span class="ustatus success">${esc(r.status)}</span>`;
+    case 'unchanged':
+      return '<span class="ustatus unchanged">unchanged</span>';
+    case 'failed':
+      return '<span class="ustatus fail">failed</span>';
+    case 'unmounted':
+      return '<span class="ustatus fail">unmounted</span>';
+    case 'running':
+      return '<span class="ustatus running">running</span>';
+    case 'skipped':
+      return '<span class="ustatus skipped">skipped</span>';
+    default:
+      return '<span class="ustatus none">—</span>';
+  }
+}
+function projectFields(p, r) {
+  const notUpdatable = isNotUpdatable(p, r);
+  return {
+    key: p.file || p.project,
+    scheduled: !!(state.enabled || {})[p.file || p.project],
+    statusHtml: statusHtml(r),
+    updateStatusHtml: updateStatusHtml(r),
+    updatable: !notUpdatable,
+    // Show the time only when the project was actually checked.
+    lastCheck: lastCheckHtml(r),
+  };
+}
+
+function toggleHtml(checked, disabled, title) {
+  return `<label class="toggle"${title ? ` title="${esc(title)}"` : ''}>
+    <input type="checkbox" ${checked ? 'checked' : ''} ${disabled ? 'disabled' : ''}>
+    <span class="slider"></span>
+  </label>`;
+}
+
+function wireCheckbox(cb, key) {
+  cb.addEventListener('change', async (e) => {
+    await fetch('api/project', { method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ file: key, enabled: e.target.checked }) });
+    toast('Saved'); load();
+  });
+}
+function wireButton(btn, p) {
+  btn.addEventListener('click', async () => {
+    btn.disabled = true; btn.textContent = 'Checking…';
+    try {
+      const res = await fetch('api/check', { method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ file: p.file, working_dir: p.working_dir, project: p.project }) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error((data && data.status) || ('HTTP ' + res.status));
+      if (data.status === 'already-running') {
+        toast(p.project + ' is already being checked');
+      } else {
+        toast('Checking ' + p.project + '…');
+      }
+      // The periodic load() reflects progress and the final result.
+      await load();
+    } catch (e) {
+      toast('Error: ' + e.message);
+      btn.disabled = false;
+    }
+  });
+}
+
+function passesFilters(p, f) {
+  const fu = $('filterUpdate').value;
+  const fc = $('filterCron').value;
+  const q = ($('filterSearch').value || '').trim().toLowerCase();
+  if (fu === 'eligible' && !f.updatable) return false;
+  if (fu === 'ineligible' && f.updatable) return false;
+  if (fc === 'on' && !f.scheduled) return false;
+  if (fc === 'off' && f.scheduled) return false;
+  if (q) {
+    const hay = ((p.project || '') + ' ' + (p.file || '')).toLowerCase();
+    if (!hay.includes(q)) return false;
+  }
+  return true;
+}
+
+// Return the projects currently passing the filters, with their result merged.
+function filteredProjects() {
   const statusByFile = {};
   (state.results || []).forEach(r => statusByFile[r.file] = r);
-  const projects = state.projects || [];
-  if (!projects.length) {
-    body.innerHTML = '<tr><td colspan="5" class="muted">No running Compose projects found.</td></tr>';
+  (state.logs || []).forEach(l => {
+    if (l.status === 'running' && l.file) statusByFile[l.file] = { file: l.file, status: 'running', detail: l.detail || 'checking…' };
+  });
+  const out = [];
+  for (const p of (state.projects || [])) {
+    const r = statusByFile[p.file] || {};
+    const f = projectFields(p, r);
+    if (passesFilters(p, f)) out.push(p);
+  }
+  return out;
+}
+function currentFilteredProjects() { return filteredProjects(); }
+
+function renderProjects() {
+  const tbody = $('projects'); const cards = $('projectsCards');
+  tbody.innerHTML = ''; cards.innerHTML = '';
+  const statusByFile = {};
+  (state.results || []).forEach(r => statusByFile[r.file] = r);
+  // Overlay any in-progress checks so the row shows "running".
+  (state.logs || []).forEach(l => {
+    if (l.status === 'running' && l.file) statusByFile[l.file] = { file: l.file, status: 'running', detail: l.detail || 'checking…' };
+  });
+  const all = state.projects || [];
+  let shown = 0;
+  for (const p of all) {
+    const r = statusByFile[p.file] || {};
+    const f = projectFields(p, r);
+    if (!passesFilters(p, f)) continue;
+    shown++;
+    const busy = r.status === 'running';
+    const btnDisabled = !p.mounted || busy;
+    const btnLabel = busy ? 'Checking…' : 'Check &amp; update';
+    const toggle = toggleHtml(f.scheduled, !p.mounted, p.mounted ? '' : 'path not mounted');
+
+    const tr = document.createElement('tr');
+    tr.className = p.mounted ? '' : 'unmounted-row';
+    tr.innerHTML = `
+      <td><code>${esc(p.project)}</code><div class="muted">${esc(p.file || '(no file)')}${p.mounted ? '' : ' <span class="warn">— not mounted</span>'}</div></td>
+      <td>${f.updateStatusHtml}</td>
+      <td class="lastcheck-cell">${f.lastCheck}</td>
+      <td class="sched-cell">${toggle}<span class="toggle-label">${f.scheduled ? 'On' : 'Off'}</span></td>
+      <td><button class="secondary small" ${btnDisabled ? 'disabled' : ''}>${btnLabel}</button></td>`;
+    wireCheckbox(tr.querySelector('.toggle input'), f.key);
+    wireButton(tr.querySelector('button'), p);
+    tbody.appendChild(tr);
+
+    const card = document.createElement('div');
+    card.className = 'proj-card' + (p.mounted ? '' : ' disabled');
+    card.innerHTML = `
+      <div class="card-head">
+        <span class="card-title"><code>${esc(p.project)}</code></span>
+        ${f.updateStatusHtml}
+      </div>
+      <div class="card-path">${esc(p.file || '(no file)')}${p.mounted ? '' : ' — <span class="warn">not mounted</span>'}</div>
+      <div class="card-lastcheck">${f.lastCheck}</div>
+      <div class="card-actions">
+        <span class="toggle-wrap">${toggle}<span class="toggle-label">Scheduled</span></span>
+        <button class="secondary small" ${btnDisabled ? 'disabled' : ''}>${btnLabel}</button>
+      </div>`;
+    wireCheckbox(card.querySelector('.toggle input'), f.key);
+    wireButton(card.querySelector('button'), p);
+    cards.appendChild(card);
+  }
+  $('filterSummary').textContent = shown + ' of ' + all.length + ' shown';
+  if (!shown) {
+    const msg = all.length ? 'No projects match the filters.' : 'No running Compose projects found.';
+    tbody.innerHTML = `<tr><td colspan="5" class="muted">${msg}</td></tr>`;
+    cards.innerHTML = `<div class="muted">${msg}</div>`;
+  }
+}
+
+function renderLogs() {
+  const tbody = $('logs'); const cards = $('logsCards');
+  tbody.innerHTML = ''; cards.innerHTML = '';
+  const logs = state.logs || [];
+  if (!logs.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="muted">No checks yet.</td></tr>';
+    cards.innerHTML = '<div class="muted">No checks yet.</div>';
     return;
   }
-  for (const p of projects) {
-    const r = statusByFile[p.file] || {};
-    const key = p.file || p.project;
-    const scheduled = !!(state.enabled || {})[key];
+  for (const l of logs) {
+    const trig = l.trigger === 'manual'
+      ? '<span class="status manual">manual</span>'
+      : '<span class="status cron">cron</span>';
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td><input type="checkbox" ${scheduled ? 'checked' : ''} ${p.mounted ? '' : 'disabled title="path not mounted"' + ''}></td>
-      <td><code>${p.project}</code><div class="muted">${p.file || '(no file)'}${p.mounted ? '' : ' <span class="warn">— not mounted</span>'}</div></td>
-      <td>${r.status ? `<span class="status ${r.status}">${r.status}</span>` : '<span class="muted">—</span>'}</td>
-      <td class="muted">${r.detail || (r.services && r.services.length ? 'eligible: ' + r.services.join(', ') : '')}</td>
-      <td><button class="secondary small" ${p.mounted ? '' : 'disabled'}>Check &amp; update</button></td>`;
-    tr.querySelector('input[type=checkbox]').addEventListener('change', async (e) => {
-      await fetch('api/project', { method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ file: key, enabled: e.target.checked }) });
-      toast('Saved'); load();
-    });
-    tr.querySelector('button').addEventListener('click', async () => {
-      const btn = tr.querySelector('button'); btn.disabled = true;
-      await fetch('api/check', { method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ file: p.file, working_dir: p.working_dir, project: p.project }) });
-      toast('Checking ' + p.project);
-      setTimeout(() => { btn.disabled = false; load(); }, 2000);
-    });
-    body.appendChild(tr);
+      <td class="muted">${esc(fmtTime(l.when))}</td>
+      <td>${trig}</td>
+      <td><code>${esc(l.project || l.file)}</code></td>
+      <td>${updateStatusHtml(l)}</td>
+      <td class="muted detail-cell"><div class="detail-inner" data-scrollkey="log-${esc(l.file||l.project)}-${esc(l.when)}">${esc(l.detail || '')}</div></td>`;
+    tbody.appendChild(tr);
+
+    const card = document.createElement('div');
+    card.className = 'log-card';
+    card.innerHTML = `
+      <div class="log-card-head">
+        <code>${esc(l.project || l.file)}</code>
+        ${updateStatusHtml(l)}
+      </div>
+      <div class="log-card-meta">${trig} · ${esc(fmtTime(l.when))}</div>
+      ${l.detail ? `<div class="log-card-detail muted" data-scrollkey="logcard-${esc(l.file||l.project)}-${esc(l.when)}">${esc(l.detail)}</div>` : ''}`;
+    cards.appendChild(card);
   }
 }
 
@@ -164,8 +578,30 @@ $('saveBtn').addEventListener('click', saveConfig);
 $('runBtn').addEventListener('click', async () => {
   $('runBtn').disabled = true;
   await fetch('api/run', { method: 'POST' });
-  toast('Scan started');
+  toast('Cron run started');
   setTimeout(() => { $('runBtn').disabled = false; load(); }, 1500);
+});
+
+// Run a manual check on every project currently visible under the filters.
+$('runFilteredBtn').addEventListener('click', async () => {
+  const list = currentFilteredProjects().filter(p => p.mounted);
+  if (!list.length) { toast('No mounted projects to run'); return; }
+  $('runFilteredBtn').disabled = true;
+  try {
+    const res = await fetch('api/check-many', { method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ projects: list.map(p => ({ file: p.file, working_dir: p.working_dir, project: p.project })) }) });
+    const data = await res.json().catch(() => ({}));
+    toast('Running ' + (data.started != null ? data.started : list.length) + ' project(s)');
+    await load();
+  } catch (e) {
+    toast('Error: ' + e.message);
+  } finally {
+    $('runFilteredBtn').disabled = false;
+  }
+});
+
+['filterUpdate', 'filterCron', 'filterSearch'].forEach(id => {
+  $(id).addEventListener('input', () => { if (state) renderProjects(); });
 });
 
 load();

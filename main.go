@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -32,6 +34,7 @@ type updater struct {
 	lastRun     time.Time
 	nextRun     time.Time
 	lastResults []projectResult
+	logs        []checkLog
 }
 
 // projectResult is the outcome of processing one compose file, surfaced to the
@@ -45,6 +48,18 @@ type projectResult struct {
 	Services []string `json:"services,omitempty"`
 	Updated  []string `json:"updated,omitempty"`
 	When     string   `json:"when"`
+	Trigger  string   `json:"trigger,omitempty"` // "manual" or "cron"
+	logged   bool     // internal: whether this result should appear in the check log
+}
+
+// checkLog is a single historical check event shown in the web UI.
+type checkLog struct {
+	When    string `json:"when"`
+	Trigger string `json:"trigger"` // "manual" or "cron"
+	Project string `json:"project"`
+	File    string `json:"file"`
+	Status  string `json:"status"` // running, updated, unchanged, skipped, unmounted, pulled, failed
+	Detail  string `json:"detail,omitempty"`
 }
 
 // composeCommand describes how to invoke Compose on this host. It supports
@@ -230,7 +245,18 @@ func (u *updater) run() {
 	log.Printf("scan started: found %d running Compose project(s)", len(projects))
 	results := make([]projectResult, 0, len(projects))
 	for _, p := range projects {
-		results = append(results, u.processProject(p, false))
+		// Projects not selected for scheduled updates, or not mounted (so their
+		// compose file cannot be read), are skipped without a check result: they
+		// keep no "last check" and produce no log entry.
+		if !u.cfg.ProjectEnabled(p.Key()) || !p.Mounted {
+			continue
+		}
+		if !u.startLog(p, "cron") {
+			continue
+		}
+		res := u.processProject(p, false, "cron")
+		u.finishLog(res)
+		results = append(results, res)
 	}
 	u.mu.Lock()
 	u.lastResults = results
@@ -258,23 +284,29 @@ func (u *updater) timeout() time.Duration {
 // processProject inspects and updates a single running project, returning a
 // result for the web UI. When forced (manual "check & update" action) the
 // per-project allowlist is ignored, but the global auto_update switch and the
-// build-only filter still apply.
-func (u *updater) processProject(p composeProject, forced bool) projectResult {
+// build-only filter still apply. trigger is "manual" or "cron".
+func (u *updater) processProject(p composeProject, forced bool, trigger string) projectResult {
 	u.cfg.mu.Lock()
 	autoUpdate := u.cfg.AutoUpdateEnabled()
 	u.cfg.mu.Unlock()
 	enabled := u.cfg.ProjectEnabled(p.Key())
 	if !forced && !enabled {
 		res := nowResult(p, enabled)
+		res.Trigger = trigger
 		res.Status, res.Detail = "skipped", "not selected for scheduled updates"
-		log.Printf("skip %s: not selected for scheduled updates", p.Key())
+		// Do not log projects that simply are not scheduled: they have no real
+		// check to report and would flood the log on every cron run.
+		res.logged = false
 		return res
 	}
-	return u.process(p, enabled, autoUpdate)
+	return u.process(p, enabled, autoUpdate, trigger)
 }
 
-func (u *updater) process(p composeProject, enabled, autoUpdate bool) projectResult {
+func (u *updater) process(p composeProject, enabled, autoUpdate bool, trigger string) projectResult {
 	res := nowResult(p, enabled)
+	res.Trigger = trigger
+	res.logged = true
+	log.Printf("[%s] checking %s (%s)", trigger, p.Project, p.File)
 	file := p.File
 	if file == "" {
 		res.Status, res.Detail = "failed", "no compose file in project labels"
@@ -324,16 +356,47 @@ func (u *updater) process(p composeProject, enabled, autoUpdate bool) projectRes
 		return res
 	}
 	var eligible []string
+	var buildOnly, notRunning, noImage []string
 	for name, svc := range cfg.Services {
-		if !running[name] || strings.TrimSpace(svc.Image) == "" || hasBuild(svc.Build) {
+		if !running[name] {
+			notRunning = append(notRunning, name)
+			continue
+		}
+		if hasBuild(svc.Build) {
+			buildOnly = append(buildOnly, name)
+			continue
+		}
+		if strings.TrimSpace(svc.Image) == "" {
+			noImage = append(noImage, name)
 			continue
 		}
 		eligible = append(eligible, name)
 	}
 	sort.Strings(eligible)
+	sort.Strings(buildOnly)
+	sort.Strings(noImage)
+	sort.Strings(notRunning)
 	res.Services = eligible
 	if len(eligible) == 0 {
-		res.Status, res.Detail = "skipped", "no running image-only services eligible for update"
+		res.Status = "skipped"
+		switch {
+		case len(buildOnly) > 0 && len(notRunning) == 0 && len(noImage) == 0:
+			res.Detail = "built locally (build:), not pulled from a registry — nothing to update: " + strings.Join(buildOnly, ", ")
+		case len(notRunning) > 0 && len(buildOnly) == 0 && len(noImage) == 0:
+			res.Detail = "no running services"
+		default:
+			var parts []string
+			if len(buildOnly) > 0 {
+				parts = append(parts, "build-only: "+strings.Join(buildOnly, ", "))
+			}
+			if len(noImage) > 0 {
+				parts = append(parts, "no image: "+strings.Join(noImage, ", "))
+			}
+			if len(notRunning) > 0 {
+				parts = append(parts, "not running: "+strings.Join(notRunning, ", "))
+			}
+			res.Detail = "no image-based services eligible for update (" + strings.Join(parts, "; ") + ")"
+		}
 		log.Printf("skip %s: %v", p.Key(), res.Detail)
 		return res
 	}
@@ -348,7 +411,9 @@ func (u *updater) process(p composeProject, enabled, autoUpdate bool) projectRes
 		return res
 	}
 
-	if _, err := u.runCmd(ctx, dir, u.compose.withFile(file, "pull", eligible...)); err != nil {
+	if _, err := u.runCmdStream(ctx, dir, u.compose.withFile(file, "pull", eligible...), func(line string) {
+		u.progressLog(p.Key(), "pulling: "+line)
+	}); err != nil {
 		res.Status, res.Detail = "failed", "pull failed: "+err.Error()
 		log.Printf("pull failed for %s: %v", p.Key(), err)
 		return res
@@ -385,7 +450,7 @@ func (u *updater) process(p composeProject, enabled, autoUpdate bool) projectRes
 // checkAndUpdate runs a single project immediately (manual action), bypassing
 // the scheduled-update allowlist but honoring the global settings.
 func (u *updater) checkAndUpdate(p composeProject) projectResult {
-	return u.processProject(p, true)
+	return u.processProject(p, true, "manual")
 }
 
 // containerImageIDs returns, for each running service, the image ID of its
@@ -523,6 +588,84 @@ func (u *updater) runCmd(parent context.Context, dir string, argv []string) ([]b
 		return out.Bytes(), fmt.Errorf("%s: %w: %s", strings.Join(argv, " "), err, strings.TrimSpace(out.String()))
 	}
 	return out.Bytes(), nil
+}
+
+// runCmdStream is like runCmd but reports progress: onProgress is called with
+// the latest non-empty line of combined output (throttled) as the command runs.
+// The full output is still returned for callers that parse it.
+func (u *updater) runCmdStream(parent context.Context, dir string, argv []string, onProgress func(string)) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(parent, u.timeout())
+	defer cancel()
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Dir = dir
+	pr, pw := io.Pipe()
+	cmd.Stdout = pw
+	cmd.Stderr = pw
+
+	var full bytes.Buffer
+	var mu sync.Mutex
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r := bufio.NewReaderSize(pr, 64*1024)
+		for {
+			chunk, err := r.ReadString('\n')
+			// Also split on carriage returns, which docker progress uses to
+			// redraw the same line in place.
+			for _, seg := range strings.FieldsFunc(chunk, func(c rune) bool { return c == '\r' }) {
+				seg = strings.TrimSpace(stripANSI(seg))
+				if seg == "" {
+					continue
+				}
+				mu.Lock()
+				full.WriteString(seg)
+				full.WriteByte('\n')
+				mu.Unlock()
+				if onProgress != nil {
+					onProgress(seg)
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	err := cmd.Run()
+	_ = pw.Close()
+	<-done
+	mu.Lock()
+	out := append([]byte(nil), full.Bytes()...)
+	mu.Unlock()
+	if ctx.Err() != nil {
+		return out, ctx.Err()
+	}
+	if err != nil {
+		return out, fmt.Errorf("%s: %w: %s", strings.Join(argv, " "), err, strings.TrimSpace(string(out)))
+	}
+	return out, nil
+}
+
+// stripANSI removes common ANSI escape sequences (color/progress control) so
+// captured progress lines stay readable in the web UI.
+func stripANSI(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '[' {
+			i += 2
+			for i < len(s) {
+				c := s[i]
+				if (c >= '0' && c <= '9') || c == ';' || c == '?' {
+					i++
+					continue
+				}
+				break
+			}
+		} else {
+			b.WriteByte(s[i])
+		}
+	}
+	return b.String()
 }
 
 func splitList(s string) []string {

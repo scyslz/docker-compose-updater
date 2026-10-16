@@ -14,6 +14,9 @@ import (
 //go:embed web/index.html
 var webFS embed.FS
 
+// maxCheckLogs caps the in-memory check log ring shown in the web UI.
+const maxCheckLogs = 100
+
 // webConfig is the editable subset of Config exposed over the API.
 type webConfig struct {
 	CronSchedule   string `json:"cron_schedule"`
@@ -27,6 +30,7 @@ type webState struct {
 	Config    webConfig        `json:"config"`
 	Projects  []composeProject `json:"projects"`
 	Results   []projectResult  `json:"results"`
+	Logs      []checkLog       `json:"logs"`
 	Enabled   map[string]bool  `json:"enabled"`
 	Compose   string           `json:"compose"`
 	Running   bool             `json:"running"`
@@ -123,11 +127,46 @@ func startWeb(u *updater, addr string) {
 			return
 		}
 		p := composeProject{File: body.File, WorkingDir: body.WorkingDir, Project: body.Project, Mounted: fileReadable(body.File)}
-		go func() {
-			res := u.checkAndUpdate(p)
-			u.recordResult(res)
-		}()
+		if !u.startLog(p, "manual") {
+			writeJSON(w, map[string]string{"status": "already-running"})
+			return
+		}
+		go u.runManualCheck(p)
 		writeJSON(w, map[string]string{"status": "started"})
+	})
+
+	// Check & update several projects immediately (e.g. the filtered list).
+	mux.HandleFunc("/api/check-many", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var body struct {
+			Projects []struct {
+				File       string `json:"file"`
+				WorkingDir string `json:"working_dir"`
+				Project    string `json:"project"`
+			} `json:"projects"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		started, skipped := 0, 0
+		for _, it := range body.Projects {
+			if strings.TrimSpace(it.File) == "" {
+				skipped++
+				continue
+			}
+			p := composeProject{File: it.File, WorkingDir: it.WorkingDir, Project: it.Project, Mounted: fileReadable(it.File)}
+			if !u.startLog(p, "manual") {
+				skipped++
+				continue
+			}
+			started++
+			go u.runManualCheck(p)
+		}
+		writeJSON(w, map[string]any{"status": "started", "started": started, "skipped": skipped})
 	})
 
 	// Run a full scan of all running projects.
@@ -147,6 +186,13 @@ func startWeb(u *updater, addr string) {
 	}
 }
 
+// runManualCheck performs a single manual check and records its outcome.
+func (u *updater) runManualCheck(p composeProject) {
+	res := u.checkAndUpdate(p)
+	u.recordResult(res)
+	u.finishLog(res)
+}
+
 // recordResult merges a single-project result into the last scan results so the
 // UI reflects manual actions too.
 func (u *updater) recordResult(res projectResult) {
@@ -159,6 +205,93 @@ func (u *updater) recordResult(res projectResult) {
 		}
 	}
 	u.lastResults = append(u.lastResults, res)
+}
+
+// startLog records the beginning of a check so the UI shows activity while a
+// (potentially slow) pull/update runs. It returns false when a check for the
+// same project is already in progress, so callers can skip the duplicate.
+func (u *updater) startLog(p composeProject, trigger string) bool {
+	entry := checkLog{
+		When:    time.Now().Format(time.RFC3339),
+		Trigger: trigger,
+		Project: p.Project,
+		File:    p.File,
+		Status:  "running",
+		Detail:  "checking…",
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	for i := range u.logs {
+		if u.logs[i].File == p.File && u.logs[i].Status == "running" {
+			log.Printf("[%s] %s already being checked; ignoring duplicate trigger", trigger, p.Project)
+			return false
+		}
+	}
+	u.logs = append([]checkLog{entry}, u.logs...)
+	if len(u.logs) > maxCheckLogs {
+		u.logs = u.logs[:maxCheckLogs]
+	}
+	log.Printf("[%s] checking %s (%s)", trigger, p.Project, p.File)
+	return true
+}
+
+// progressLog appends output lines to the in-progress log entry for a project
+// so the UI can show the full pull/update output while it runs.
+func (u *updater) progressLog(key, line string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	for i := range u.logs {
+		if u.logs[i].File == key && u.logs[i].Status == "running" {
+			cur := u.logs[i].Detail
+			if cur == "" || cur == "checking…" {
+				u.logs[i].Detail = line
+			} else {
+				u.logs[i].Detail = cur + "\n" + line
+			}
+			// Bound the stored text so a chatty command cannot grow unbounded.
+			const maxLen = 20000
+			if len(u.logs[i].Detail) > maxLen {
+				u.logs[i].Detail = u.logs[i].Detail[len(u.logs[i].Detail)-maxLen:]
+			}
+			return
+		}
+	}
+}
+
+// finishLog replaces the in-progress entry for a project with its final result.
+func (u *updater) finishLog(res projectResult) {
+	entry := checkLog{
+		When:    res.When,
+		Trigger: res.Trigger,
+		Project: res.Project,
+		File:    res.File,
+		Status:  res.Status,
+		Detail:  res.Detail,
+	}
+	u.mu.Lock()
+	replaced := false
+	for i := range u.logs {
+		if u.logs[i].File == res.File && u.logs[i].Status == "running" {
+			u.logs[i] = entry
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		u.logs = append([]checkLog{entry}, u.logs...)
+		if len(u.logs) > maxCheckLogs {
+			u.logs = u.logs[:maxCheckLogs]
+		}
+	}
+	u.mu.Unlock()
+	log.Printf("[%s] %s -> %s%s", entry.Trigger, entry.Project, entry.Status, detailSuffix(entry.Detail))
+}
+
+func detailSuffix(d string) string {
+	if d == "" {
+		return ""
+	}
+	return " (" + d + ")"
 }
 
 func (u *updater) state() webState {
@@ -178,6 +311,7 @@ func (u *updater) state() webState {
 
 	u.mu.Lock()
 	results := append([]projectResult(nil), u.lastResults...)
+	logs := append([]checkLog(nil), u.logs...)
 	running := u.running
 	next := u.nextRun
 	last := u.lastRun
@@ -188,6 +322,7 @@ func (u *updater) state() webState {
 		Config:   wc,
 		Projects: projects,
 		Results:  results,
+		Logs:     logs,
 		Enabled:  enabled,
 		Compose:  u.compose.display,
 		Running:  running,

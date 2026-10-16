@@ -1,2 +1,5 @@
 /compose-auto-updater
 *.out
+
+# Local runtime config (created by the container)
+/config/

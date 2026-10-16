@@ -69,6 +69,7 @@
   button.secondary { background: transparent; color: var(--secondary-text); border-color: var(--secondary-border); }
   button.small { padding: 6px 10px; font-size: 12.5px; }
   button:disabled { opacity: .5; cursor: not-allowed; }
+  button.confirm { background: #dc2626; border-color: #dc2626; color: #fff; }
   .row { display: flex; gap: 16px; flex-wrap: wrap; }
   .row > label { flex: 1 1 200px; min-width: 0; display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
   .switch { display: inline-flex; align-items: center; gap: 8px; color: var(--text); font-size: 14px; }
@@ -302,6 +303,32 @@ function toast(msg) {
   const t = $('toast'); t.textContent = msg; t.classList.add('show');
   setTimeout(() => t.classList.remove('show'), 2500);
 }
+
+// wrap runs an action behind a two-step confirmation: the first click arms the
+// button (label becomes confirmLabel), a second click within the timeout runs
+// the action, and any other click cancels. Returns a click handler.
+function dblConfirm(btn, confirmLabel, action) {
+  let armed = false, timer = null, orig = null;
+  const reset = () => {
+    if (timer) { clearTimeout(timer); timer = null; }
+    armed = false;
+    if (orig !== null) { btn.textContent = orig; btn.classList.remove('confirm'); orig = null; }
+    window.__confirmArmed = false;
+  };
+  return () => {
+    if (!armed) {
+      armed = true;
+      window.__confirmArmed = true;
+      orig = btn.textContent;
+      btn.textContent = confirmLabel;
+      btn.classList.add('confirm');
+      timer = setTimeout(reset, 4000);
+      return;
+    }
+    reset();
+    action();
+  };
+}
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
@@ -342,7 +369,9 @@ async function load() {
     + (state.last_run ? ' · last: ' + state.last_run : '');
   $('scanError').textContent = state.scan_error ? 'Error listing projects: ' + state.scan_error : '';
   const scrollMemo = snapshotScroll();
-  renderProjects();
+  // Skip re-rendering the project list while a two-step confirm is armed, so a
+  // background refresh does not wipe the confirmation state.
+  if (!window.__confirmArmed) renderProjects();
   renderLogs();
   restoreScroll(scrollMemo);
 }
@@ -416,7 +445,7 @@ function wireCheckbox(cb, key) {
   });
 }
 function wireButton(btn, p) {
-  btn.addEventListener('click', async () => {
+  const action = async () => {
     btn.disabled = true; btn.textContent = 'Checking…';
     try {
       const res = await fetch('api/check', { method: 'POST', headers: {'Content-Type':'application/json'},
@@ -434,7 +463,8 @@ function wireButton(btn, p) {
       toast('Error: ' + e.message);
       btn.disabled = false;
     }
-  });
+  };
+  btn.addEventListener('click', dblConfirm(btn, 'Confirm?', action));
 }
 
 function passesFilters(p, f) {
@@ -575,15 +605,16 @@ async function saveConfig() {
 }
 
 $('saveBtn').addEventListener('click', saveConfig);
-$('runBtn').addEventListener('click', async () => {
+
+$('runBtn').addEventListener('click', dblConfirm($('runBtn'), 'Confirm?', async () => {
   $('runBtn').disabled = true;
   await fetch('api/run', { method: 'POST' });
   toast('Cron run started');
   setTimeout(() => { $('runBtn').disabled = false; load(); }, 1500);
-});
+}));
 
 // Run a manual check on every project currently visible under the filters.
-$('runFilteredBtn').addEventListener('click', async () => {
+$('runFilteredBtn').addEventListener('click', dblConfirm($('runFilteredBtn'), 'Confirm?', async () => {
   const list = currentFilteredProjects().filter(p => p.mounted);
   if (!list.length) { toast('No mounted projects to run'); return; }
   $('runFilteredBtn').disabled = true;
@@ -598,7 +629,7 @@ $('runFilteredBtn').addEventListener('click', async () => {
   } finally {
     $('runFilteredBtn').disabled = false;
   }
-});
+}));
 
 ['filterUpdate', 'filterCron', 'filterSearch'].forEach(id => {
   $(id).addEventListener('input', () => { if (state) renderProjects(); });

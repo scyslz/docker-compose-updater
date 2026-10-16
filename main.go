@@ -180,25 +180,18 @@ func selfContainerID() string {
 	return ""
 }
 
-// runsSelf reports whether the given compose service is this updater's own
-// container, by comparing running container IDs for the project against selfID.
-func (u *updater) runsSelf(ctx context.Context, dir, project, file string, services []string) bool {
-	if u.selfID == "" {
+// projectIsSelf reports whether this updater's own container belongs to the
+// given compose project.
+func (u *updater) projectIsSelf(ctx context.Context, project string) bool {
+	if u.selfID == "" || project == "" {
 		return false
 	}
-	var out []byte
-	var err error
-	if project != "" {
-		out, err = u.runDocker(ctx, "", []string{"ps", "-q", "--filter", "label=com.docker.compose.project=" + project})
-	} else {
-		out, err = u.runCmd(ctx, dir, u.compose.withProjectFile(project, file, "ps", append([]string{"-q"}, services...)...))
-	}
+	out, err := u.runDocker(ctx, "", []string{"ps", "-q", "--filter", "label=com.docker.compose.project=" + project})
 	if err != nil {
 		return false
 	}
 	for _, line := range strings.Split(string(out), "\n") {
-		id := strings.TrimSpace(line)
-		if id != "" && strings.HasPrefix(id, u.selfID) {
+		if id := strings.TrimSpace(line); id != "" && strings.HasPrefix(id, u.selfID) {
 			return true
 		}
 	}
@@ -467,127 +460,10 @@ func (u *updater) process(p composeProject, enabled, autoUpdate bool, trigger st
 		log.Printf("skip %s: %v", p.Key(), res.Detail)
 		return res
 	}
-	// Stopped project (manual check only; the scheduler never reaches here):
-	// pull current images and start it, so it comes up on the latest images.
-	if !p.Running {
-		all := map[string]bool{}
-		for name := range cfg.Services {
-			all[name] = true
-		}
-		eligible, buildOnly, _, noImage := classifyServices(cfg.Services, all)
-		if len(eligible) == 0 {
-			res.Status = "skipped"
-			switch {
-			case len(buildOnly) > 0 && len(noImage) == 0:
-				res.Detail = "stopped; built locally (build:), nothing to pull: " + strings.Join(buildOnly, ", ")
-			default:
-				var parts []string
-				if len(buildOnly) > 0 {
-					parts = append(parts, "build-only: "+strings.Join(buildOnly, ", "))
-				}
-				if len(noImage) > 0 {
-					parts = append(parts, "no image: "+strings.Join(noImage, ", "))
-				}
-				res.Detail = "stopped; no image-based services to pull (" + strings.Join(parts, "; ") + ")"
-			}
-			log.Printf("skip %s: %v", p.Key(), res.Detail)
-			return res
-		}
-		if _, err := u.runCmdStream(ctx, dir, u.compose.withProjectFile(p.Project, file, "pull", eligible...), func(line string) {
-			u.progressLog(p.Key(), "pulling: "+line)
-		}); err != nil {
-			res.Status, res.Detail = "failed", "pull failed: "+err.Error()
-			log.Printf("pull failed for stopped %s: %v", p.Key(), err)
-			return res
-		}
-		// Start (create) the whole project on the freshly pulled images.
-		upArgs := []string{"-d", "--no-build"}
-		if u.compose.supports {
-			upArgs = append(upArgs, "--wait")
-		}
-		upArgs = append(upArgs, eligible...)
-		u.progressLog(p.Key(), "starting…")
-		if out, err := u.runCmd(ctx, dir, u.compose.withProjectFile(p.Project, file, "up", upArgs...)); err != nil {
-			res.Status, res.Detail = "failed", "start failed: "+err.Error()
-			log.Printf("START FAILED for stopped %s: %v\n%s", p.Key(), err, strings.TrimSpace(string(out)))
-			return res
-		}
-		res.Services = eligible
-		res.Updated = eligible
-		res.Status, res.Detail = "started", "stopped project: pulled and started "+strings.Join(eligible, ", ")
-		log.Printf("pulled and started stopped project %s: %s", p.Key(), strings.Join(eligible, ", "))
-		return res
-	}
-	// Determine running services from container labels (profile- and
-	// compose-file-agnostic), falling back to `compose ps`.
-	running := map[string]bool{}
-	if p.Project != "" {
-		fromLabels, err := u.runningServices(ctx, p.Project)
-		if err != nil {
-			res.Status, res.Detail = "failed", "cannot list running services: "+err.Error()
-			log.Printf("skip %s: %v", p.Key(), res.Detail)
-			return res
-		}
-		for k := range fromLabels {
-			running[k] = true
-		}
-	}
-	if len(running) == 0 {
-		psOut, err := u.runCmd(ctx, dir, u.compose.withProjectFile(p.Project, file, "ps", "--services", "--status", "running"))
-		if err != nil {
-			res.Status, res.Detail = "failed", "cannot list running services: "+err.Error()
-			log.Printf("skip %s: %v", p.Key(), res.Detail)
-			return res
-		}
-		for _, s := range strings.Split(string(psOut), "\n") {
-			if s = strings.TrimSpace(s); s != "" {
-				running[s] = true
-			}
-		}
-	}
-	log.Printf("%s: compose services=%s running=%s", p.Key(), serviceNames(cfg.Services), nameList(running))
-	if len(running) == 0 {
-		res.Status, res.Detail = "skipped", "no running Compose services"
-		log.Printf("skip %s: %v", p.Key(), res.Detail)
-		return res
-	}
-	eligible, buildOnly, notRunning, noImage := classifyServices(cfg.Services, running)
-	res.Services = eligible
-	if len(eligible) == 0 {
-		res.Status = "skipped"
-		switch {
-		case len(buildOnly) > 0 && len(notRunning) == 0 && len(noImage) == 0:
-			res.Detail = "built locally (build:), not pulled from a registry — nothing to update: " + strings.Join(buildOnly, ", ")
-		case len(notRunning) > 0 && len(buildOnly) == 0 && len(noImage) == 0:
-			res.Detail = "no running services"
-		default:
-			var parts []string
-			if len(buildOnly) > 0 {
-				parts = append(parts, "build-only: "+strings.Join(buildOnly, ", "))
-			}
-			if len(noImage) > 0 {
-				parts = append(parts, "no image: "+strings.Join(noImage, ", "))
-			}
-			if len(notRunning) > 0 {
-				parts = append(parts, "not running: "+strings.Join(notRunning, ", "))
-			}
-			res.Detail = "no image-based services eligible for update (" + strings.Join(parts, "; ") + ")"
-		}
-		log.Printf("skip %s: %v", p.Key(), res.Detail)
-		return res
-	}
-	log.Printf("%s: eligible running services: %s", p.Key(), strings.Join(eligible, ", "))
-
-	// Record the image ID each running container currently uses, so we only
-	// recreate the services whose image actually changed after pulling.
-	before, err := u.containerImageIDs(ctx, dir, p.Project, file, eligible)
-	if err != nil {
-		res.Status, res.Detail = "failed", "cannot read current image IDs: "+err.Error()
-		log.Printf("skip %s: %v", p.Key(), res.Detail)
-		return res
-	}
-
-	if _, err := u.runCmdStream(ctx, dir, u.compose.withProjectFile(p.Project, file, "pull", eligible...), func(line string) {
+	// Pull current images for the whole project. Compose skips services that have
+	// no registry image (build-only), so there is no need to enumerate services.
+	u.progressLog(p.Key(), "pulling…")
+	if _, err := u.runCmdStream(ctx, dir, u.compose.withProjectFile(p.Project, file, "pull"), func(line string) {
 		u.progressLog(p.Key(), "pulling: "+line)
 	}); err != nil {
 		res.Status, res.Detail = "failed", "pull failed: "+err.Error()
@@ -595,43 +471,65 @@ func (u *updater) process(p composeProject, enabled, autoUpdate bool, trigger st
 		return res
 	}
 
-	changed := u.changedServices(ctx, dir, eligible, cfg, before)
-	res.Updated = changed
-	if len(changed) == 0 {
-		res.Status, res.Detail = "unchanged", "images unchanged, nothing to recreate"
-		log.Printf("%s: %v", p.Key(), res.Detail)
+	upArgs := []string{"-d", "--no-build"}
+	if u.compose.supports {
+		upArgs = append(upArgs, "--wait")
+	}
+
+	// Stopped project (manual check only; the scheduler never reaches here):
+	// start it on the freshly pulled images.
+	if !p.Running {
+		u.progressLog(p.Key(), "starting…")
+		if _, err := u.runCmdStream(ctx, dir, u.compose.withProjectFile(p.Project, file, "up", upArgs...), func(line string) {
+			u.progressLog(p.Key(), line)
+		}); err != nil {
+			res.Status, res.Detail = "failed", "start failed: "+err.Error()
+			log.Printf("START FAILED for stopped %s: %v", p.Key(), err)
+			return res
+		}
+		res.Status, res.Detail = "started", "stopped project: pulled and started"
+		log.Printf("pulled and started stopped project %s", p.Key())
 		return res
 	}
-	log.Printf("%s: image updated for: %s", p.Key(), strings.Join(changed, ", "))
+
 	if !autoUpdate {
 		res.Status, res.Detail = "pulled", "images pulled only (auto_update=false)"
 		log.Printf("AUTO_UPDATE=false: pulled images only; not recreating %s", p.Key())
 		return res
 	}
-	upArgs := []string{"-d", "--no-deps", "--no-build"}
-	if u.compose.supports {
-		upArgs = append(upArgs, "--wait")
-	}
-	upArgs = append(upArgs, changed...)
-	if u.runsSelf(ctx, dir, p.Project, file, changed) {
-		// The update includes this updater's own container: run it through a
-		// detached helper so it survives our recreation.
+
+	// If the update would recreate this updater's own container, run it through a
+	// detached helper so it survives our recreation.
+	if u.projectIsSelf(ctx, p.Project) {
 		if err := u.selfUpdate(ctx, dir, p.Project, file, upArgs); err != nil {
 			res.Status, res.Detail = "failed", "self-update failed: "+err.Error()
 			log.Printf("SELF-UPDATE FAILED for %s: %v", p.Key(), err)
 			return res
 		}
-		res.Status, res.Detail = "updated", "self-update started (detached): "+strings.Join(changed, ", ")
+		res.Status, res.Detail = "updated", "self-update started (detached)"
 		log.Printf("self-update started for %s", p.Key())
 		return res
 	}
-	if out, err := u.runCmd(ctx, dir, u.compose.withProjectFile(p.Project, file, "up", upArgs...)); err != nil {
+
+	// Bring the project up: Compose recreates only containers whose image or
+	// config changed, leaving the rest untouched.
+	var upBuf bytes.Buffer
+	u.progressLog(p.Key(), "updating…")
+	if _, err := u.runCmdStream(ctx, dir, u.compose.withProjectFile(p.Project, file, "up", upArgs...), func(line string) {
+		upBuf.WriteString(line + "\n")
+		u.progressLog(p.Key(), line)
+	}); err != nil {
 		res.Status, res.Detail = "failed", "update failed: "+err.Error()
-		log.Printf("UPDATE FAILED for %s: %v\n%s", p.Key(), err, strings.TrimSpace(string(out)))
+		log.Printf("UPDATE FAILED for %s: %v", p.Key(), err)
 		return res
 	}
-	res.Status, res.Detail = "updated", "recreated: "+strings.Join(changed, ", ")
-	log.Printf("updated successfully: %s", p.Key())
+	if strings.Contains(upBuf.String(), "Recreated") || strings.Contains(upBuf.String(), "Created") {
+		res.Status, res.Detail = "updated", "recreated changed services"
+		log.Printf("updated successfully: %s", p.Key())
+	} else {
+		res.Status, res.Detail = "unchanged", "images unchanged, nothing to recreate"
+		log.Printf("%s: %v", p.Key(), res.Detail)
+	}
 	return res
 }
 
@@ -639,67 +537,6 @@ func (u *updater) process(p composeProject, enabled, autoUpdate bool, trigger st
 // the scheduled-update allowlist but honoring the global settings.
 func (u *updater) checkAndUpdate(p composeProject) projectResult {
 	return u.processProject(p, true, "manual")
-}
-
-// containerImageIDs returns, for each running service, the image ID of its
-// running container, keyed by compose service name. It uses the compose service
-// label so the mapping is exact even when image references include digests.
-func (u *updater) containerImageIDs(ctx context.Context, dir, project, file string, services []string) (map[string]string, error) {
-	// Prefer container labels (profile-agnostic); fall back to compose ps when
-	// the project name is unknown.
-	var idsOut []byte
-	var err error
-	if project != "" {
-		idsOut, err = u.runDocker(ctx, "", []string{"ps", "-q", "--filter", "label=com.docker.compose.project=" + project})
-	} else {
-		idsOut, err = u.runCmd(ctx, dir, u.compose.withProjectFile(project, file, "ps", append([]string{"-q"}, services...)...))
-	}
-	if err != nil {
-		return nil, err
-	}
-	var ids []string
-	for _, line := range strings.Split(string(idsOut), "\n") {
-		if id := strings.TrimSpace(line); id != "" {
-			ids = append(ids, id)
-		}
-	}
-	result := map[string]string{}
-	if len(ids) == 0 {
-		return result, nil
-	}
-	inspectArgs := append([]string{"inspect", "--format",
-		`{{.Config.Image}} {{index .Config.Labels "com.docker.compose.service"}} {{.Image}}`}, ids...)
-	out, err := u.runDocker(ctx, dir, inspectArgs)
-	if err != nil {
-		return nil, err
-	}
-	for _, line := range strings.Split(string(out), "\n") {
-		fields := strings.Fields(strings.TrimSpace(line))
-		if len(fields) == 3 {
-			result[fields[1]] = normalizeImageID(fields[2])
-		}
-	}
-	return result, nil
-}
-
-// serviceNames returns a sorted, comma-joined list of service names.
-func serviceNames(services map[string]serviceConfig) string {
-	names := make([]string, 0, len(services))
-	for n := range services {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	return strings.Join(names, ",")
-}
-
-// nameList returns a sorted, comma-joined list of the set's keys.
-func nameList(set map[string]bool) string {
-	names := make([]string, 0, len(set))
-	for n := range set {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	return strings.Join(names, ",")
 }
 
 // classifyServices splits a project's services into update-eligible and
@@ -728,49 +565,6 @@ func classifyServices(services map[string]serviceConfig, running map[string]bool
 	sort.Strings(noImage)
 	sort.Strings(notRunning)
 	return
-}
-
-// changedServices compares each service's currently running container image ID
-// against the ID that the service's configured image reference now resolves to
-// locally (after pulling), returning the services whose image changed.
-func (u *updater) changedServices(ctx context.Context, dir string, services []string, cfg composeConfig, before map[string]string) []string {
-	var changed []string
-	for _, name := range services {
-		oldID := before[name]
-		if oldID == "" {
-			// No running container image recorded; be conservative and recreate.
-			changed = append(changed, name)
-			continue
-		}
-		ref := strings.TrimSpace(cfg.Services[name].Image)
-		nowID, err := u.resolveImageID(ctx, dir, ref)
-		if err != nil {
-			log.Printf("cannot resolve image %q for %s, recreating to be safe: %v", ref, name, err)
-			changed = append(changed, name)
-			continue
-		}
-		if nowID != "" && nowID != oldID {
-			changed = append(changed, name)
-		}
-	}
-	return changed
-}
-
-// resolveImageID returns the local image ID (without the "sha256:" prefix) that
-// the given image reference currently resolves to.
-func (u *updater) resolveImageID(ctx context.Context, dir, ref string) (string, error) {
-	if ref == "" {
-		return "", fmt.Errorf("empty image reference")
-	}
-	out, err := u.runDocker(ctx, dir, []string{"image", "inspect", "--format", "{{.Id}}", ref})
-	if err != nil {
-		return "", err
-	}
-	id := strings.TrimSpace(strings.SplitN(string(out), "\n", 2)[0])
-	if id == "" {
-		return "", fmt.Errorf("no local image for reference %q", ref)
-	}
-	return normalizeImageID(id), nil
 }
 
 // normalizeImageID strips the "sha256:" prefix so IDs from `docker inspect`

@@ -252,7 +252,7 @@
     </div>
     <div class="proj-scroll">
       <table class="proj-table">
-        <thead><tr><th>Project / file</th><th style="width:110px">Status</th><th style="width:170px">Last check</th><th style="width:130px">Scheduled</th><th style="width:160px">Actions</th></tr></thead>
+        <thead><tr><th>Project / file</th><th style="width:110px">Status</th><th style="width:170px">Last check</th><th style="width:170px">Last update</th><th style="width:130px">Scheduled</th><th style="width:160px">Actions</th></tr></thead>
         <tbody id="projects"></tbody>
       </table>
     </div>
@@ -419,6 +419,7 @@ function updateStatusHtml(r) {
 }
 function projectFields(p, r) {
   const notUpdatable = isNotUpdatable(p, r);
+  const updatedAt = r.updated_at || ((state.last_updates || {})[p.file] || '');
   return {
     key: p.file || p.project,
     scheduled: !!(state.enabled || {})[p.file || p.project],
@@ -427,6 +428,9 @@ function projectFields(p, r) {
     updatable: !notUpdatable,
     // Show the time only when the project was actually checked.
     lastCheck: lastCheckHtml(r),
+    // Last successful update (updated/pulled/started) can be older than the
+    // last check and survives restarts via the persisted config.
+    lastUpdate: updatedAt ? esc(fmtTime(updatedAt)) : '<span class="muted">—</span>',
   };
 }
 
@@ -531,6 +535,7 @@ function renderProjects() {
       <td><code>${esc(p.project)}</code><div class="muted">${esc(p.file || '(no file)')}${stateTag}</div></td>
       <td>${f.updateStatusHtml}</td>
       <td class="lastcheck-cell">${f.lastCheck}</td>
+      <td class="lastcheck-cell">${f.lastUpdate}</td>
       <td class="sched-cell">${toggle}<span class="toggle-label">${f.scheduled ? 'On' : 'Off'}</span></td>
       <td><button class="secondary small" ${btnDisabled ? 'disabled' : ''}>${btnLabel}</button></td>`;
     wireCheckbox(tr.querySelector('.toggle input'), f.key);
@@ -545,7 +550,8 @@ function renderProjects() {
         ${f.updateStatusHtml}
       </div>
       <div class="card-path">${esc(p.file || '(no file)')}${stateTag}</div>
-      <div class="card-lastcheck">${f.lastCheck}</div>
+      <div class="card-lastcheck">Checked: ${f.lastCheck || '—'}</div>
+      <div class="card-lastcheck">Last update: ${f.lastUpdate}</div>
       <div class="card-actions">
         <span class="toggle-wrap">${toggle}<span class="toggle-label">Scheduled</span></span>
         <button class="secondary small" ${btnDisabled ? 'disabled' : ''}>${btnLabel}</button>
@@ -557,7 +563,7 @@ function renderProjects() {
   $('filterSummary').textContent = shown + ' of ' + all.length + ' shown';
   if (!shown) {
     const msg = all.length ? 'No projects match the filters.' : 'No running Compose projects found.';
-    tbody.innerHTML = `<tr><td colspan="5" class="muted">${msg}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6" class="muted">${msg}</td></tr>`;
     cards.innerHTML = `<div class="muted">${msg}</div>`;
   }
 }

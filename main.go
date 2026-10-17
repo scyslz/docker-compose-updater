@@ -49,8 +49,12 @@ type projectResult struct {
 	Services []string `json:"services,omitempty"`
 	Updated  []string `json:"updated,omitempty"`
 	When     string   `json:"when"`
-	Trigger  string   `json:"trigger,omitempty"` // "manual" or "cron"
-	logged   bool     // internal: whether this result should appear in the check log
+	// UpdatedAt is the time of the last successful update (updated/pulled/
+	// started), independent of the latest check. It is persisted in the config
+	// file and carried across checks that did not update anything.
+	UpdatedAt string `json:"updated_at,omitempty"`
+	Trigger   string `json:"trigger,omitempty"` // "manual" or "cron"
+	logged    bool   // internal: whether this result should appear in the check log
 }
 
 // checkLog is a single historical check event shown in the web UI.
@@ -436,6 +440,21 @@ func nowResult(p composeProject, enabled bool) projectResult {
 	return projectResult{File: p.File, Project: p.Project, Enabled: enabled, When: time.Now().Format(time.RFC3339)}
 }
 
+// markUpdated records a successful update on the result and persists its time so
+// the UI can keep showing "last update" across restarts and log trimming.
+func (u *updater) markUpdated(res projectResult, status, detail string) projectResult {
+	res.Status, res.Detail = status, detail
+	when := res.When
+	if when == "" {
+		when = time.Now().Format(time.RFC3339)
+	}
+	res.UpdatedAt = when
+	if err := u.cfg.SetLastUpdate(res.File, when); err != nil {
+		log.Printf("cannot persist last update time for %s: %v", res.File, err)
+	}
+	return res
+}
+
 // startTimeFor returns the start time recorded for an in-progress result of the
 // given file, or "" if none is in progress.
 func (u *updater) startTimeFor(file string) string {
@@ -549,13 +568,13 @@ func (u *updater) process(p composeProject, enabled, autoUpdate bool, trigger st
 			log.Printf("START FAILED for stopped %s: %v", p.Key(), err)
 			return res
 		}
-		res.Status, res.Detail = "started", "stopped project: pulled and started"
+		res = u.markUpdated(res, "started", "stopped project: pulled and started")
 		log.Printf("pulled and started stopped project %s", p.Key())
 		return res
 	}
 
 	if !autoUpdate {
-		res.Status, res.Detail = "pulled", "images pulled only (auto_update=false)"
+		res = u.markUpdated(res, "pulled", "images pulled only (auto_update=false)")
 		log.Printf("AUTO_UPDATE=false: pulled images only; not recreating %s", p.Key())
 		return res
 	}
@@ -576,7 +595,7 @@ func (u *updater) process(p composeProject, enabled, autoUpdate bool, trigger st
 			log.Printf("SELF-UPDATE FAILED for %s: %v", p.Key(), err)
 			return res
 		}
-		res.Status, res.Detail = "updated", "self-update started (detached)"
+		res = u.markUpdated(res, "updated", "self-update started (detached)")
 		log.Printf("self-update started for %s", p.Key())
 		return res
 	}
@@ -594,7 +613,7 @@ func (u *updater) process(p composeProject, enabled, autoUpdate bool, trigger st
 		return res
 	}
 	if strings.Contains(upBuf.String(), "Recreated") || strings.Contains(upBuf.String(), "Created") {
-		res.Status, res.Detail = "updated", "recreated changed services"
+		res = u.markUpdated(res, "updated", "recreated changed services")
 		log.Printf("updated successfully: %s", p.Key())
 	} else {
 		res.Status, res.Detail = "unchanged", "images unchanged, nothing to recreate"

@@ -31,6 +31,10 @@ type Config struct {
 	// daemon) that participate in scheduled automatic updates. Projects not
 	// listed are discovered and visible in the UI but never updated on schedule.
 	EnabledProjects map[string]bool `json:"enabled_projects"`
+	// LastUpdates remembers when each compose file was last updated
+	// successfully (RFC3339). It is stored in the config file so the web UI can
+	// still show it after the updater restarts or updates itself.
+	LastUpdates map[string]string `json:"last_updates,omitempty"`
 
 	mu   sync.Mutex
 	path string
@@ -86,6 +90,9 @@ func (c *Config) normalize() {
 	if c.EnabledProjects == nil {
 		c.EnabledProjects = map[string]bool{}
 	}
+	if c.LastUpdates == nil {
+		c.LastUpdates = map[string]string{}
+	}
 }
 
 // save writes the configuration back to its file atomically.
@@ -108,13 +115,22 @@ func (c *Config) save() error {
 
 // snapshot returns a copy without the mutex, safe to marshal.
 func (c *Config) snapshot() *Config {
+	enabled := make(map[string]bool, len(c.EnabledProjects))
+	for k, v := range c.EnabledProjects {
+		enabled[k] = v
+	}
+	lastUpdates := make(map[string]string, len(c.LastUpdates))
+	for k, v := range c.LastUpdates {
+		lastUpdates[k] = v
+	}
 	cp := &Config{
 		CronSchedule:    c.CronSchedule,
 		Timezone:        c.Timezone,
 		RunOnStart:      c.RunOnStart,
 		AutoUpdate:      c.AutoUpdate,
 		CommandTimeout:  c.CommandTimeout,
-		EnabledProjects: c.EnabledProjects,
+		EnabledProjects: enabled,
+		LastUpdates:     lastUpdates,
 	}
 	return cp
 }
@@ -136,6 +152,30 @@ func (c *Config) SetProjectEnabled(path string, enabled bool) error {
 	} else {
 		delete(c.EnabledProjects, path)
 	}
+	c.mu.Unlock()
+	return c.save()
+}
+
+// LastUpdate returns the recorded last successful update time for a compose
+// file, or "" when it has never been updated.
+func (c *Config) LastUpdate(path string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.LastUpdates[path]
+}
+
+// SetLastUpdate records the last successful update time for a compose file and
+// persists it. It is a no-op when the timestamp is unchanged.
+func (c *Config) SetLastUpdate(path, when string) error {
+	if path == "" || when == "" {
+		return nil
+	}
+	c.mu.Lock()
+	if c.LastUpdates[path] == when {
+		c.mu.Unlock()
+		return nil
+	}
+	c.LastUpdates[path] = when
 	c.mu.Unlock()
 	return c.save()
 }

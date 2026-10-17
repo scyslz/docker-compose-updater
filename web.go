@@ -27,16 +27,17 @@ type webConfig struct {
 }
 
 type webState struct {
-	Config    webConfig        `json:"config"`
-	Projects  []composeProject `json:"projects"`
-	Results   []projectResult  `json:"results"`
-	Logs      []checkLog       `json:"logs"`
-	Enabled   map[string]bool  `json:"enabled"`
-	Compose   string           `json:"compose"`
-	Running   bool             `json:"running"`
-	NextRun   string           `json:"next_run,omitempty"`
-	LastRun   string           `json:"last_run,omitempty"`
-	ScanError string           `json:"scan_error,omitempty"`
+	Config      webConfig         `json:"config"`
+	Projects    []composeProject  `json:"projects"`
+	Results     []projectResult   `json:"results"`
+	Logs        []checkLog        `json:"logs"`
+	Enabled     map[string]bool   `json:"enabled"`
+	LastUpdates map[string]string `json:"last_updates,omitempty"`
+	Compose     string            `json:"compose"`
+	Running     bool              `json:"running"`
+	NextRun     string            `json:"next_run,omitempty"`
+	LastRun     string            `json:"last_run,omitempty"`
+	ScanError   string            `json:"scan_error,omitempty"`
 }
 
 // startWeb runs the HTTP management UI until the process exits. Set WEB_ADDR to
@@ -200,11 +201,21 @@ func (u *updater) runManualCheck(p composeProject) {
 func (u *updater) recordResult(res projectResult) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
+	fallback := u.cfg.LastUpdate(res.File)
 	for i, r := range u.lastResults {
 		if r.File == res.File {
+			if res.UpdatedAt == "" {
+				res.UpdatedAt = r.UpdatedAt
+			}
+			if res.UpdatedAt == "" {
+				res.UpdatedAt = fallback
+			}
 			u.lastResults[i] = res
 			return
 		}
+	}
+	if res.UpdatedAt == "" {
+		res.UpdatedAt = fallback
 	}
 	u.lastResults = append(u.lastResults, res)
 }
@@ -238,17 +249,23 @@ func (u *updater) startLog(p composeProject, trigger string) (time.Time, bool) {
 	}
 	// Reflect the in-progress check in the result list immediately, so the
 	// "last check" time updates at the start (not after the run completes).
+	// Keep the previous last-update time: an in-progress check has not updated
+	// anything yet.
 	running := projectResult{
-		File:    p.File,
-		Project: p.Project,
-		Status:  "running",
-		Detail:  "checking…",
-		When:    now.Format(time.RFC3339),
-		Trigger: trigger,
+		File:      p.File,
+		Project:   p.Project,
+		Status:    "running",
+		Detail:    "checking…",
+		When:      now.Format(time.RFC3339),
+		UpdatedAt: u.cfg.LastUpdate(p.File),
+		Trigger:   trigger,
 	}
 	replaced := false
 	for i := range u.lastResults {
 		if u.lastResults[i].File == p.File {
+			if u.lastResults[i].UpdatedAt != "" {
+				running.UpdatedAt = u.lastResults[i].UpdatedAt
+			}
 			u.lastResults[i] = running
 			replaced = true
 			break
@@ -333,6 +350,10 @@ func (u *updater) state() webState {
 	for k, v := range u.cfg.EnabledProjects {
 		enabled[k] = v
 	}
+	lastUpdates := map[string]string{}
+	for k, v := range u.cfg.LastUpdates {
+		lastUpdates[k] = v
+	}
 	u.cfg.mu.Unlock()
 
 	u.mu.Lock()
@@ -345,13 +366,14 @@ func (u *updater) state() webState {
 
 	projects, err := u.discoverRunningProjects(context.Background())
 	st := webState{
-		Config:   wc,
-		Projects: projects,
-		Results:  results,
-		Logs:     logs,
-		Enabled:  enabled,
-		Compose:  u.compose.display,
-		Running:  running,
+		Config:      wc,
+		Projects:    projects,
+		Results:     results,
+		Logs:        logs,
+		Enabled:     enabled,
+		LastUpdates: lastUpdates,
+		Compose:     u.compose.display,
+		Running:     running,
 	}
 	if err != nil {
 		st.ScanError = err.Error()

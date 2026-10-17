@@ -66,6 +66,7 @@ The updater embeds a small web UI (default `http://<host>:8080`) for viewing and
 - **Running projects**: every currently-running Compose project is listed (from Docker labels). Tick a project to include it in the **scheduled** update; use **Check & update** to update just that project immediately — even if it is not ticked.
 - **Scan all now**: run a full scan over all selected projects.
 - Each project shows its last status: `updated`, `unchanged`, `skipped`, `unmounted`, `pulled`, or `failed`.
+- Each project also shows **Last check** (when it was last inspected) and **Last update** (the last successful `updated`/`pulled`/`started` action). Last-update times are stored in the config file, so they survive restarts and self-updates.
 
 Projects whose compose file is not mounted inside the container appear with a **not mounted** marker; their checkbox and button are disabled until you mount the directory.
 
@@ -91,6 +92,12 @@ See `config.example.json` for the full shape:
 ```
 
 `enabled_projects` maps an absolute compose file path (as reported by Docker) to `true` when it is selected for scheduled updates. Mount `./config` (or any host dir) to `/config` to persist it.
+
+The updater also maintains a `last_updates` map (compose file path → RFC3339 timestamp) in the same file to power the **Last update** column. It is written automatically; you do not need to edit it.
+
+### Check log retention
+
+The web UI keeps the most recent **100** check entries in memory (`maxCheckLogs` in `web.go`). Once that limit is exceeded, the oldest entry is dropped, so the log rotates automatically rather than growing without bound. Each entry's captured command output is capped at 20 KB. The log is **not** written to disk and is cleared when the container restarts; use `docker logs` for the process log. Last-update timestamps are separate from this ring buffer and persist in the config file.
 
 ## Behavior and safety
 

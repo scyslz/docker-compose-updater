@@ -80,6 +80,33 @@ func TestSetProjectEnabledPersists(t *testing.T) {
 	}
 }
 
+func TestSetLastUpdatePersists(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "updater.json")
+	c := &Config{path: path}
+	c.normalize()
+	when := "2026-10-17T12:00:00Z"
+	if err := c.SetLastUpdate("/a/compose.yaml", when); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.LastUpdate("/a/compose.yaml"); got != when {
+		t.Fatalf("LastUpdate = %q, want %q", got, when)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var loaded Config
+	loaded.path = path
+	if err := json.Unmarshal(data, &loaded); err != nil {
+		t.Fatal(err)
+	}
+	loaded.normalize()
+	if got := loaded.LastUpdate("/a/compose.yaml"); got != when {
+		t.Fatalf("persisted LastUpdate = %q, want %q", got, when)
+	}
+}
+
 func TestLoadConfigFromFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "updater.json")

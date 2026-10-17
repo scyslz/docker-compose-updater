@@ -391,6 +391,12 @@ func (u *updater) setNextRun(t time.Time) {
 	u.mu.Unlock()
 }
 
+// maxParallelProjects caps how many projects are pulled/updated at the same
+// time during a scheduled scan. Each project's `compose pull` already pulls its
+// images concurrently; this cap bounds the number of independent Compose
+// invocations so the Docker daemon and registries are not overwhelmed.
+const maxParallelProjects = 4
+
 func (u *updater) run() {
 	u.mu.Lock()
 	if u.running {
@@ -414,6 +420,11 @@ func (u *updater) run() {
 		return
 	}
 	log.Printf("scan started: found %d Compose project(s)", len(projects))
+
+	// The self project is handled after every other project has finished: its
+	// update recreates this container, which would otherwise kill in-flight
+	// pulls for other projects.
+	var queue, self []composeProject
 	for _, p := range projects {
 		// The scheduler only processes running projects. Stopped projects (and
 		// those not selected for scheduled updates, or whose compose file is not
@@ -422,13 +433,42 @@ func (u *updater) run() {
 		if !p.Running || !u.cfg.ProjectEnabled(p.Key()) || !p.Mounted {
 			continue
 		}
+		if u.projectIsSelf(context.Background(), p.Project) {
+			self = append(self, p)
+		} else {
+			queue = append(queue, p)
+		}
+	}
+
+	// Pull/update independent projects concurrently with a bounded worker pool.
+	// startLog is called before dispatch so the UI shows all queued checks.
+	sem := make(chan struct{}, maxParallelProjects)
+	var wg sync.WaitGroup
+	for _, p := range queue {
+		if _, ok := u.startLog(p, "cron"); !ok {
+			continue
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(p composeProject) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			res := u.processProject(p, false, "cron")
+			u.finishLog(res)
+			// Merge so results for projects not covered by this scan (e.g.
+			// stopped projects updated manually) are preserved.
+			u.recordResult(res)
+		}(p)
+	}
+	wg.Wait()
+
+	// Run self-updates last and one at a time.
+	for _, p := range self {
 		if _, ok := u.startLog(p, "cron"); !ok {
 			continue
 		}
 		res := u.processProject(p, false, "cron")
 		u.finishLog(res)
-		// Merge so results for projects not covered by this scan (e.g. stopped
-		// projects updated manually) are preserved.
 		u.recordResult(res)
 	}
 	log.Printf("scan finished in %s", time.Since(started).Round(time.Second))

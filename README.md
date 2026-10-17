@@ -106,6 +106,7 @@ The web UI keeps the most recent **100** check entries in memory (`maxCheckLogs`
 - Requires the compose file to be readable inside the container (mount its directory at the same absolute path) before it can be updated.
 - Only updates services that are currently running, have `image:`, and do not have `build:`.
 - Auto-detects the Compose implementation: `docker compose` (v2) is preferred, falling back to `docker-compose` (v1). Force one with `PREFER_COMPOSE=v1|v2`.
+- Scheduled scans process up to 4 projects concurrently (`maxParallelProjects` in `main.go`); Compose itself pulls a project's images in parallel. The updater's own project is always updated last so its container recreation does not interrupt other pulls.
 - Records each running container's image ID, runs `compose pull <eligible services>`, then **only recreates services whose image ID actually changed**. Unchanged services are left untouched and the project is reported as "images unchanged, nothing to recreate".
 - Recreates via `compose up -d --no-deps --no-build [--wait] <changed services>` when `AUTO_UPDATE=true`. `--wait` is added only on v2 (v1 has no `--wait`).
 - Does not call `docker stop`, `docker rm`, `docker compose down`, or `--remove-orphans`.

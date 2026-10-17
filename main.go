@@ -203,7 +203,7 @@ func (u *updater) projectIsSelf(ctx context.Context, project string) bool {
 // mounts the Docker socket and the project working directory and runs the same
 // compose command with the same arguments.
 func (u *updater) selfUpdate(ctx context.Context, dir, project, file string, upArgs []string) error {
-	helper := selfUpdateHelperArgs(u.compose, dir, project, file, upArgs)
+	helper := selfUpdateHelperArgs(u.compose, u.helperImage(ctx), dir, project, file, upArgs, composeEnv(os.Environ()))
 	log.Printf("self-update: launching detached helper: docker %s", strings.Join(helper, " "))
 	// Use a context detached from cancellation: the updater container will be
 	// recreated and this process may be stopped; the helper runs independently.
@@ -214,12 +214,45 @@ func (u *updater) selfUpdate(ctx context.Context, dir, project, file string, upA
 	return nil
 }
 
+// helperImage returns the image the detached self-update helper should run:
+// this updater's own image, so the helper uses the same Compose implementation
+// (and therefore the same config hashing) as `compose pull`/`config` run by the
+// updater. Falling back to docker:cli can make Compose compute a different
+// config hash, which recreates the container on every self-update.
+func (u *updater) helperImage(ctx context.Context) string {
+	if u.selfID != "" {
+		out, err := u.runDocker(ctx, "", []string{"inspect", "--format", "{{.Image}}", u.selfID})
+		if err == nil {
+			if id := strings.TrimSpace(string(out)); id != "" {
+				return id
+			}
+		}
+	}
+	return "docker:cli"
+}
+
+// composeEnv returns the COMPOSE_* variables from environ so the helper
+// interpolates the compose file exactly like this process (for example an
+// image override such as COMPOSE_AUTO_UPDATER_IMAGE).
+func composeEnv(environ []string) []string {
+	var out []string
+	for _, kv := range environ {
+		if strings.HasPrefix(kv, "COMPOSE_") {
+			out = append(out, kv)
+		}
+	}
+	return out
+}
+
 // selfUpdateHelperArgs builds the `docker run ...` argv for a detached helper
 // that performs a compose update independently of this container's lifecycle.
-func selfUpdateHelperArgs(cc composeCommand, dir, project, file string, upArgs []string) []string {
+func selfUpdateHelperArgs(cc composeCommand, image, dir, project, file string, upArgs, env []string) []string {
+	entrypoint := "docker"
 	var inner []string
 	if cc.v2 {
 		inner = append(inner, "compose")
+	} else {
+		entrypoint = "docker-compose"
 	}
 	if project != "" {
 		inner = append(inner, "-p", project)
@@ -229,17 +262,46 @@ func selfUpdateHelperArgs(cc composeCommand, dir, project, file string, upArgs [
 
 	helper := []string{
 		"run", "--rm", "-d",
+		"--entrypoint", entrypoint,
 		"-v", "/var/run/docker.sock:/var/run/docker.sock",
 		"-v", dir + ":" + dir,
 		"-w", dir,
-		"docker:cli",
 	}
-	if cc.v2 {
-		helper = append(helper, "docker")
-	} else {
-		helper = append(helper, "docker-compose")
+	for _, kv := range env {
+		helper = append(helper, "-e", kv)
 	}
+	helper = append(helper, image)
 	return append(helper, inner...)
+}
+
+// selfUpdatePending reports whether `compose up` would create or recreate any
+// container for this project. It uses Compose's dry-run mode, which inspects
+// the project without changing it, so the updater can report "unchanged" and
+// avoid launching a helper when the running container is already up to date.
+func (u *updater) selfUpdatePending(ctx context.Context, dir, project, file string, upArgs []string) bool {
+	if !u.compose.v2 {
+		// Compose v1 has no dry-run; assume a change so the update still runs.
+		return true
+	}
+	dryArgs := append([]string{"up"}, upArgs...)
+	out, err := u.runCmdStream(ctx, dir, u.compose.withProjectFile(project, file, "--dry-run", dryArgs...), nil)
+	if err != nil {
+		// Older Compose releases lack --dry-run. Be conservative and run the
+		// update rather than silently skipping it.
+		log.Printf("self-update: dry-run unavailable (%v); updating unconditionally", err)
+		return true
+	}
+	return dryRunShowsChanges(string(out))
+}
+
+// dryRunShowsChanges reports whether `compose --dry-run up` output contains an
+// action that would create or recreate a container. A no-op dry-run only
+// mentions Running/Waiting/Healthy.
+func dryRunShowsChanges(text string) bool {
+	lower := strings.ToLower(text)
+	return strings.Contains(lower, "recreat") ||
+		strings.Contains(lower, "creat") ||
+		strings.Contains(lower, "starting")
 }
 
 func main() {
@@ -499,8 +561,16 @@ func (u *updater) process(p composeProject, enabled, autoUpdate bool, trigger st
 	}
 
 	// If the update would recreate this updater's own container, run it through a
-	// detached helper so it survives our recreation.
+	// detached helper so it survives our recreation. Because this process is
+	// replaced before `compose up` finishes, ask Compose first (via dry-run)
+	// whether anything would actually change; otherwise every check would report
+	// a successful "updated" even when the container is already current.
 	if u.projectIsSelf(ctx, p.Project) {
+		if !u.selfUpdatePending(ctx, dir, p.Project, file, upArgs) {
+			res.Status, res.Detail = "unchanged", "images unchanged, nothing to recreate"
+			log.Printf("%s: %v", p.Key(), res.Detail)
+			return res
+		}
 		if err := u.selfUpdate(ctx, dir, p.Project, file, upArgs); err != nil {
 			res.Status, res.Detail = "failed", "self-update failed: "+err.Error()
 			log.Printf("SELF-UPDATE FAILED for %s: %v", p.Key(), err)

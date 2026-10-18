@@ -223,9 +223,9 @@
       overflow-wrap: anywhere; word-break: break-all;
     }
     .proj-card.disabled { opacity: .55; }
-    .proj-card .card-times { display: flex; gap: 8px; }
+    .proj-card .card-times { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .proj-card .card-time {
-      display: flex; flex: 1 1 0; flex-direction: column; gap: 2px; min-width: 0;
+      display: flex; flex-direction: column; gap: 2px; min-width: 0;
       padding: 7px 9px; border: 1px solid var(--border); border-radius: 7px;
       background: var(--input-bg);
     }
@@ -266,10 +266,9 @@
 </header>
 <main>
   <section>
-    <h2>Running projects</h2>
+    <h2>Projects</h2>
     <div class="muted" style="margin-bottom:12px">
-      Projects currently running in Docker. Toggle a project to include it in the <strong>scheduled</strong> update,
-      or use <strong>Check &amp; update</strong> to update just that project now.
+      Toggle the clock icon to schedule a project; other actions run immediately.
     </div>
     <div class="filters">
       <div class="filter-row">
@@ -305,8 +304,8 @@
   </section>
 
   <section>
-    <h2>Check log</h2>
-    <div class="muted" style="margin-bottom:12px">Recent checks triggered manually or by the scheduler.</div>
+    <h2>Logs</h2>
+    <div class="muted" style="margin-bottom:12px">Recent manual and scheduled checks.</div>
     <div class="log-scroll" data-scrollkey="logs-outer">
       <table class="log-table">
         <thead><tr><th style="width:150px">Time</th><th style="width:80px">Trigger</th><th style="width:240px">Project</th><th style="width:90px">Result</th><th>Detail</th></tr></thead>
@@ -319,7 +318,7 @@
   <section>
     <h2>Schedule</h2>
     <div class="row">
-      <label>Cron (minute hour dom mon dow)
+      <label>Cron schedule
         <input type="text" id="cron" placeholder="0 */6 * * *">
       </label>
       <label>Timezone
@@ -451,10 +450,15 @@ async function load() {
   $('timeout').value = c.command_timeout || '30m';
   $('autoUpdate').checked = !!c.auto_update;
   $('runOnStart').checked = !!c.run_on_start;
-  $('meta').textContent = 'compose: ' + (state.compose || '?')
-    + (state.running ? ' · scanning…' : '')
-    + (state.next_run ? ' · next: ' + state.next_run : '')
-    + (state.last_run ? ' · last: ' + state.last_run : '');
+  const meta = [state.compose || '?'];
+  if (state.running) meta.push('scanning…');
+  if (state.next_run) meta.push('next ' + countdownText(state.next_run));
+  if (state.last_run) meta.push('last run ' + agoParts(state.last_run).text);
+  $('meta').textContent = meta.join(' · ');
+  $('meta').title = [
+    state.next_run ? 'Next run: ' + fmtTime(state.next_run) : '',
+    state.last_run ? 'Last run: ' + fmtTime(state.last_run) : '',
+  ].filter(Boolean).join('\n');
   $('scanError').textContent = state.scan_error ? 'Error listing projects: ' + state.scan_error : '';
   const scrollMemo = snapshotScroll();
   // Skip re-rendering the project list while a two-step confirm is armed, so a
@@ -477,8 +481,24 @@ function lastCheckHtml(r) {
   if (!r.when) return '';
   return esc(fmtTime(r.when));
 }
-// agoParts renders a timestamp as a compact relative age for mobile cards. The
-// full localized timestamp is returned separately for the hover title.
+// countdownText renders the time until the next scheduled run as a compact
+// relative value ("in 4h 12m") instead of a raw timestamp.
+function countdownText(s) {
+  const d = new Date(s);
+  if (isNaN(d)) return s;
+  const sec = Math.round((d.getTime() - Date.now()) / 1000);
+  if (sec <= 0) return 'due';
+  if (sec < 60) return 'in <1m';
+  const min = Math.floor(sec / 60);
+  if (min < 60) return 'in ' + min + 'm';
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return 'in ' + hr + 'h' + (min % 60 ? ' ' + (min % 60) + 'm' : '');
+  const days = Math.floor(hr / 24);
+  if (days < 7) return 'in ' + days + 'd' + (hr % 24 ? ' ' + (hr % 24) + 'h' : '');
+  return 'on ' + fmtTime(s);
+}
+// agoParts renders a timestamp as a compact relative age for mobile cards and
+// the header. The full localized timestamp is returned separately for tooltips.
 function agoParts(s) {
   if (!s) return { text: '', full: '' };
   const d = new Date(s);

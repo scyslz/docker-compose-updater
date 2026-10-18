@@ -143,7 +143,7 @@
     .ustatus.stopped { background: #2a2f3a; color: #b8c0cf; }
     .ustatus.restarted { background: #1c2a3a; color: #8fc4f0; }
   }
-  .action-buttons { display: flex; gap: 5px; flex-wrap: wrap; }
+  .action-buttons { display: flex; gap: 5px; flex-wrap: nowrap; align-items: center; }
   .icon-btn { width: 30px; height: 30px; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
   .icon-btn svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
   .icon-btn.sched-btn.on { background: #dcfce7; border-color: #86efac; color: #166534; }
@@ -238,7 +238,7 @@
     .proj-card .card-actions label.switch { flex: 1; font-size: 13.5px; min-height: 40px; }
     .proj-card .card-actions button { flex: none; white-space: nowrap; }
     .proj-card .card-actions .icon-btn { width: 34px; height: 34px; }
-    .proj-card .card-actions .action-buttons { width: 100%; }
+    .proj-card .card-actions .action-buttons { width: 100%; flex-wrap: wrap; }
     dialog.editor { width: 96vw; max-height: 94vh; }
     .editor-body { padding: 12px; }
     #editorText { min-height: 55vh; }
@@ -296,7 +296,7 @@
     </div>
     <div class="proj-scroll">
       <table class="proj-table">
-        <thead><tr><th>Project / file</th><th style="width:110px">Status</th><th style="width:170px">Last check</th><th style="width:170px">Last update</th><th style="width:210px">Actions</th></tr></thead>
+        <thead><tr><th>Project / file</th><th style="width:110px">Status</th><th style="width:170px">Last check</th><th style="width:170px">Last update</th><th style="width:230px">Actions</th></tr></thead>
         <tbody id="projects"></tbody>
       </table>
     </div>

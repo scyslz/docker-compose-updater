@@ -295,7 +295,7 @@
     </div>
     <div class="proj-scroll">
       <table class="proj-table">
-        <thead><tr><th>Project / file</th><th style="width:110px">Status</th><th style="width:170px">Last check</th><th style="width:170px">Last update</th><th style="width:230px">Actions</th></tr></thead>
+        <thead><tr><th>Project / file</th><th style="width:110px">Status</th><th style="width:170px">Last check</th><th style="width:170px">Last update</th><th style="width:265px">Actions</th></tr></thead>
         <tbody id="projects"></tbody>
       </table>
     </div>
@@ -759,16 +759,18 @@ function renderProjects() {
     const checkBtn = iconBtn('secondary small icon-btn check-btn', 'check',
       busy ? 'Checking…' : 'Check & update', !p.mounted || busy);
     const startBtn = iconBtn('secondary small icon-btn act-btn', 'start',
-      'Start project', !p.mounted || busy, 'start');
+      running ? 'Project is already running' : 'Start project', !p.mounted || busy || running, 'start');
     const stopBtn = iconBtn('secondary small icon-btn act-btn', 'stop',
-      p.self ? lockReason : 'Stop project', !p.mounted || busy || p.self, 'stop');
+      p.self ? lockReason : (!running ? 'Project is already stopped' : 'Stop project'),
+      !p.mounted || busy || p.self || !running, 'stop');
     const restartBtn = iconBtn('secondary small icon-btn act-btn', 'restart',
-      p.self ? lockReason : 'Restart project', !p.mounted || busy || p.self, 'restart');
+      p.self ? lockReason : (!running ? 'Start the project before restarting' : 'Restart project'),
+      !p.mounted || busy || p.self || !running, 'restart');
     const recreateBtn = iconBtn('secondary small icon-btn act-btn', 'recreate',
       p.self ? lockReason : 'Force recreate containers (apply compose changes)', !p.mounted || busy || p.self, 'recreate');
     const editBtn = iconBtn('secondary small icon-btn edit-btn', 'edit',
       'View / edit compose file', !p.mounted);
-    const lifecycle = running ? stopBtn + restartBtn + recreateBtn : startBtn + recreateBtn;
+    const lifecycle = startBtn + stopBtn + restartBtn + recreateBtn;
     const fileText = esc(p.file || '(no file)');
     const expanded = p.file && expandedPaths.has(p.file);
     const pathAttrs = p.file ? ` data-path="${esc(p.file)}" title="${esc(p.file)}"` : '';

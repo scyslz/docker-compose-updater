@@ -433,7 +433,7 @@ func (u *updater) run() {
 		if !p.Running || !u.cfg.ProjectEnabled(p.Key()) || !p.Mounted {
 			continue
 		}
-		if u.projectIsSelf(context.Background(), p.Project) {
+		if p.Self {
 			self = append(self, p)
 		} else {
 			queue = append(queue, p)

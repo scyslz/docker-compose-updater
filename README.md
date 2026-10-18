@@ -5,7 +5,7 @@ A small containerized Go utility with an embedded web UI. It discovers **current
 ## Quick start
 
 1. Start the container — running Compose projects are listed automatically (discovered from Docker labels, no scanning required).
-2. Mount each host directory that contains a project you want to update at the **same absolute path** the Docker daemon reports (read-only), plus a writable dir to `/config`. Unmounted projects are still listed but marked "not mounted".
+2. Mount each host directory that contains a project you want to update at the **same absolute path** the Docker daemon reports (read-only is enough for updates; use read-write to edit compose files from the UI), plus a writable dir to `/config`. Unmounted projects are still listed but marked "not mounted".
 3. Open the web UI to tick the projects to update on schedule, or click **Check & update** to update one project immediately.
 
 ```yaml
@@ -64,13 +64,15 @@ The updater embeds a small web UI (default `http://<host>:8080`) for viewing and
 
 - **Schedule**: edit `cron_schedule`, timezone, command timeout, and the `auto_update` / `run_on_start` toggles. Saving writes the config file and the scheduler picks up the new cron on its next cycle (no restart needed).
 - **Running projects**: every currently-running Compose project is listed (from Docker labels). Tick a project to include it in the **scheduled** update; use **Check & update** to update just that project immediately — even if it is not ticked.
+- **Edit compose**: view and edit a project's primary compose file in the browser. Saving writes the file atomically and keeps the previous version as `<file>.bak`. Editing requires the project directory to be mounted **read-write** (`:rw`); with the read-only (`:ro`) mount recommended above, the editor opens in read-only mode. After saving, the updater runs `compose config` and shows a warning if the file no longer parses (the backup is still available). Saving only writes the file; use **Check & update** afterwards to apply configuration/image changes to running services.
+- **Start / stop / restart / recreate**: lifecycle buttons for every discovered project. **Recreate** runs `compose up -d --force-recreate` (plus `--wait` when supported) to apply compose edits such as a changed image tag even when Compose considers the container current. Actions run asynchronously and appear in the check log. The updater refuses to stop, restart, or recreate its own project, since that would kill its own UI.
 - **Scan all now**: run a full scan over all selected projects.
 - Each project shows its last status: `updated`, `unchanged`, `skipped`, `unmounted`, `pulled`, or `failed`.
-- Each project also shows **Last check** (when it was last inspected) and **Last update** (the last successful `updated`/`pulled`/`started` action). Last-update times are stored in the config file, so they survive restarts and self-updates.
+- Each project also shows **Last check** (when it was last inspected) and **Last update** (the last successful `updated`/`pulled`/`started`/`recreated` action). Last-update times are stored in the config file, so they survive restarts and self-updates.
 
 Projects whose compose file is not mounted inside the container appear with a **not mounted** marker; their checkbox and button are disabled until you mount the directory.
 
-The UI has **no authentication** — bind it to a trusted network or put it behind a reverse proxy. Set `WEB_ADDR=off` to disable it.
+The UI has **no authentication** — bind it to a trusted network or put it behind a reverse proxy. It can control the Docker daemon and, when project directories are mounted read-write, edit their compose files. Set `WEB_ADDR=off` to disable it.
 
 ## Configuration file
 

@@ -5,8 +5,11 @@ import (
 	"embed"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -16,6 +19,10 @@ var webFS embed.FS
 
 // maxCheckLogs caps the in-memory check log ring shown in the web UI.
 const maxCheckLogs = 100
+
+// maxComposeBytes caps how much compose-file content the editor will read or
+// write, so a mistaken path cannot exhaust memory.
+const maxComposeBytes = 1 << 20
 
 // webConfig is the editable subset of Config exposed over the API.
 type webConfig struct {
@@ -172,6 +179,123 @@ func startWeb(u *updater, addr string) {
 		writeJSON(w, map[string]any{"status": "started", "started": started, "skipped": skipped})
 	})
 
+	// Read or save the primary compose file of a known project.
+	mux.HandleFunc("/api/compose", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			p, err := u.projectByFile(r.Context(), r.URL.Query().Get("file"), r.URL.Query().Get("project"))
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusNotFound)
+				return
+			}
+			info, err := os.Stat(p.File)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusNotFound)
+				return
+			}
+			if info.Size() > maxComposeBytes {
+				http.Error(w, "compose file is too large to edit", http.StatusRequestEntityTooLarge)
+				return
+			}
+			data, err := os.ReadFile(p.File)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusForbidden)
+				return
+			}
+			writeJSON(w, map[string]any{
+				"file":     p.File,
+				"project":  p.Project,
+				"content":  string(data),
+				"writable": p.Writable,
+			})
+		case http.MethodPost:
+			r.Body = http.MaxBytesReader(w, r.Body, maxComposeBytes+64*1024)
+			var body struct {
+				File    string `json:"file"`
+				Project string `json:"project"`
+				Content string `json:"content"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			if len(body.Content) > maxComposeBytes {
+				http.Error(w, "compose file is too large to save", http.StatusRequestEntityTooLarge)
+				return
+			}
+			p, err := u.projectByFile(r.Context(), body.File, body.Project)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusNotFound)
+				return
+			}
+			if !p.Writable {
+				http.Error(w, "compose file is read-only inside the container; mount its directory read-write (:rw) to enable editing", http.StatusForbidden)
+				return
+			}
+			if u.isBusy(p.File) {
+				http.Error(w, "a check or lifecycle action is currently running for this project; try again when it finishes", http.StatusConflict)
+				return
+			}
+			backup, err := writeComposeFile(p.File, body.Content)
+			if err != nil {
+				http.Error(w, "save failed: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			warning := u.validateCompose(r.Context(), p)
+			writeJSON(w, map[string]any{"status": "saved", "backup": backup, "warning": warning})
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	// Start, stop, or restart a known project.
+	mux.HandleFunc("/api/action", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var body struct {
+			File    string `json:"file"`
+			Project string `json:"project"`
+			Action  string `json:"action"`
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		action := strings.ToLower(strings.TrimSpace(body.Action))
+		if _, _, ok := actionArgs(action, false); !ok {
+			http.Error(w, "unsupported action", http.StatusBadRequest)
+			return
+		}
+		p, err := u.projectByFile(r.Context(), body.File, body.Project)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		if !p.Mounted {
+			http.Error(w, "compose file is not readable inside the container; mount its directory to enable this action", http.StatusBadRequest)
+			return
+		}
+		if p.Self && action != "start" {
+			http.Error(w, "refusing to "+action+" the updater's own project from its own UI", http.StatusBadRequest)
+			return
+		}
+		progress := map[string]string{
+			"start":    "starting…",
+			"stop":     "stopping…",
+			"restart":  "restarting…",
+			"recreate": "recreating…",
+		}[action]
+		if _, ok := u.startLogDetail(p, "manual", progress); !ok {
+			writeJSON(w, map[string]string{"status": "already-running"})
+			return
+		}
+		go u.runAction(p, action)
+		writeJSON(w, map[string]string{"status": "started"})
+	})
+
 	// Run a full scan of all running projects.
 	mux.HandleFunc("/api/run", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -194,6 +318,190 @@ func (u *updater) runManualCheck(p composeProject) {
 	res := u.checkAndUpdate(p)
 	u.recordResult(res)
 	u.finishLog(res)
+}
+
+// projectByFile returns the discovered project that owns the given primary
+// compose file. It is used as an allowlist for the file editor and lifecycle
+// actions, so the unauthenticated UI cannot read or write arbitrary paths.
+func (u *updater) projectByFile(ctx context.Context, file, project string) (composeProject, error) {
+	file = strings.TrimSpace(file)
+	project = strings.TrimSpace(project)
+	if file == "" {
+		return composeProject{}, errors.New("file is required")
+	}
+	projects, err := u.discoverRunningProjects(ctx)
+	if err != nil {
+		return composeProject{}, err
+	}
+	var match *composeProject
+	for i := range projects {
+		p := &projects[i]
+		if p.File != file || (project != "" && p.Project != project) {
+			continue
+		}
+		if match != nil && match.Project != p.Project {
+			return composeProject{}, errors.New("compose file is shared by multiple projects; specify project")
+		}
+		match = p
+	}
+	if match == nil {
+		return composeProject{}, errors.New("unknown compose file")
+	}
+	return *match, nil
+}
+
+// isBusy reports whether a check or lifecycle action is currently running for
+// the given compose file.
+func (u *updater) isBusy(file string) bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	for i := range u.logs {
+		if u.logs[i].File == file && u.logs[i].Status == "running" {
+			return true
+		}
+	}
+	return false
+}
+
+// actionArgs maps a lifecycle action to its Compose subcommand. Recreate runs
+// `compose up --force-recreate` so edited images and other config changes are
+// applied even when Compose would otherwise consider the container current.
+func actionArgs(action string, wait bool) (string, []string, bool) {
+	switch action {
+	case "start", "stop", "restart":
+		return action, nil, true
+	case "recreate":
+		args := []string{"-d", "--no-build", "--force-recreate"}
+		if wait {
+			args = append(args, "--wait")
+		}
+		return "up", args, true
+	}
+	return "", nil, false
+}
+
+// runAction starts, stops, restarts, or recreates a project and records the
+// outcome like a manual check. startLog has already marked it as running.
+func (u *updater) runAction(p composeProject, action string) {
+	ctx, cancel := context.WithTimeout(context.Background(), u.timeout())
+	defer cancel()
+	dir := p.WorkingDir
+	if dir == "" {
+		dir = filepath.Dir(p.File)
+	}
+	sub, extra, ok := actionArgs(action, u.compose.supports)
+	if !ok {
+		log.Printf("[manual] %s: unsupported action %q", p.Key(), action)
+		return
+	}
+	argv := u.compose.withProjectFile(p.Project, p.File, sub, extra...)
+	out, err := u.runCmdStream(ctx, dir, argv, func(line string) {
+		u.progressLog(p.Key(), line)
+	})
+	res := nowResult(p, u.cfg.ProjectEnabled(p.Key()))
+	res.Trigger = "manual"
+	if err != nil {
+		res.Status = "failed"
+		res.Detail = action + " failed: " + err.Error()
+	} else {
+		switch action {
+		case "start":
+			res.Status = "started"
+		case "stop":
+			res.Status = "stopped"
+		case "restart":
+			res.Status = "restarted"
+		case "recreate":
+			res.Status = "recreated"
+		}
+		res.Detail = lastNonEmptyLine(out)
+		if res.Detail == "" {
+			res.Detail = action + " via web UI"
+		}
+		if action == "recreate" {
+			res = u.markUpdated(res, "recreated", res.Detail)
+		}
+	}
+	u.finishLog(res)
+	u.recordResult(res)
+	log.Printf("[manual] %s -> %s%s", p.Key(), res.Status, detailSuffix(res.Detail))
+}
+
+// lastNonEmptyLine returns the last non-blank line of command output, which is
+// the most useful summary for a start/stop/restart log entry.
+func lastNonEmptyLine(out []byte) string {
+	lines := strings.Split(string(out), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if s := strings.TrimSpace(lines[i]); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+// writeComposeFile backs up and atomically replaces a compose file, preserving
+// its permissions. The backup is written next to the file as <name>.bak.
+func writeComposeFile(path, content string) (string, error) {
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		path = real
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", errors.New("not a regular file")
+	}
+	old, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	backup := path + ".bak"
+	if err := os.WriteFile(backup, old, info.Mode().Perm()); err != nil {
+		return "", fmt.Errorf("backup failed: %w", err)
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".compose-edit-*")
+	if err != nil {
+		return "", err
+	}
+	tmpName := tmp.Name()
+	cleanup := func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+	}
+	if _, err := tmp.WriteString(content); err != nil {
+		cleanup()
+		return "", err
+	}
+	if err := tmp.Chmod(info.Mode().Perm()); err != nil {
+		cleanup()
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return "", err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
+		return "", err
+	}
+	return backup, nil
+}
+
+// validateCompose runs `compose config` after a save and returns a warning (not
+// an error) when the edited file no longer parses. The save is still kept so
+// the user can fix it in place; the previous version remains in the backup.
+func (u *updater) validateCompose(ctx context.Context, p composeProject) string {
+	dir := p.WorkingDir
+	if dir == "" {
+		dir = filepath.Dir(p.File)
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	if _, err := u.runCmd(ctx, dir, u.compose.withProjectFile(p.Project, p.File, "config", "--quiet")); err != nil {
+		return "compose validation failed: " + err.Error()
+	}
+	return ""
 }
 
 // recordResult merges a single-project result into the last scan results so the
@@ -226,6 +534,12 @@ func (u *updater) recordResult(res projectResult) {
 // progress (so callers can skip the duplicate). The start time is also written
 // into the current result so the "last check" column updates immediately.
 func (u *updater) startLog(p composeProject, trigger string) (time.Time, bool) {
+	return u.startLogDetail(p, trigger, "checking…")
+}
+
+// startLogDetail is startLog with a custom in-progress message, used by
+// lifecycle actions (starting/stopping/restarting).
+func (u *updater) startLogDetail(p composeProject, trigger, detail string) (time.Time, bool) {
 	now := time.Now()
 	entry := checkLog{
 		When:    now.Format(time.RFC3339),
@@ -233,7 +547,7 @@ func (u *updater) startLog(p composeProject, trigger string) (time.Time, bool) {
 		Project: p.Project,
 		File:    p.File,
 		Status:  "running",
-		Detail:  "checking…",
+		Detail:  detail,
 	}
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -255,7 +569,7 @@ func (u *updater) startLog(p composeProject, trigger string) (time.Time, bool) {
 		File:      p.File,
 		Project:   p.Project,
 		Status:    "running",
-		Detail:    "checking…",
+		Detail:    detail,
 		When:      now.Format(time.RFC3339),
 		UpdatedAt: u.cfg.LastUpdate(p.File),
 		Trigger:   trigger,
@@ -274,7 +588,7 @@ func (u *updater) startLog(p composeProject, trigger string) (time.Time, bool) {
 	if !replaced {
 		u.lastResults = append(u.lastResults, running)
 	}
-	log.Printf("[%s] checking %s (%s)", trigger, p.Project, p.File)
+	log.Printf("[%s] %s %s (%s)", trigger, strings.TrimSuffix(detail, "…"), p.Project, p.File)
 	return now, true
 }
 

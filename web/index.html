@@ -111,24 +111,17 @@
   #runFilteredBtn { margin-left: auto; align-self: end; }
   .filter-summary { font-size: 12px; margin-top: 8px; }
   .proj-scroll { height: 58vh; min-height: 220px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; }
-  .proj-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  .proj-table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 14px; }
   .proj-table th, .proj-table td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
   .proj-table th { position: sticky; top: 0; background: var(--card); color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; z-index: 1; }
   .proj-table tr:last-child td { border-bottom: none; }
-  .sched-cell { white-space: nowrap; }
+  .project-name { display: block; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 15px; font-weight: 700; line-height: 1.3; color: var(--text); letter-spacing: .01em; }
+  .project-file { display: block; margin-top: 3px; max-width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+  .project-file.expanded { white-space: normal; overflow-wrap: anywhere; }
+  .project-tags { margin-top: 2px; font-size: 11.5px; }
   .lastcheck { font-size: 12px; margin-top: 4px; }
   .lastcheck span { font-size: 12px; }
   tr.unmounted-row { opacity: .55; }
-
-  /* Toggle switch */
-  .toggle { position: relative; display: inline-block; width: 42px; height: 24px; vertical-align: middle; }
-  .toggle input { opacity: 0; width: 0; height: 0; }
-  .toggle .slider { position: absolute; inset: 0; background: var(--border); border-radius: 999px; transition: background .15s; cursor: pointer; }
-  .toggle .slider::before { content: ""; position: absolute; height: 18px; width: 18px; left: 3px; top: 3px; background: #fff; border-radius: 50%; transition: transform .15s; }
-  .toggle input:checked + .slider { background: var(--accent); }
-  .toggle input:checked + .slider::before { transform: translateX(18px); }
-  .toggle input:disabled + .slider { opacity: .5; cursor: not-allowed; }
-  .toggle-label { font-size: 12px; color: var(--muted); margin-left: 6px; vertical-align: middle; }
 
   /* Status column (update result only) */
   .ustatus { padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; white-space: nowrap; }
@@ -138,6 +131,8 @@
   .ustatus.unchanged { background: #e5e7eb; color: #374151; }
   .ustatus.skipped { background: #fef3c7; color: #854d0e; }
   .ustatus.none { background: transparent; color: var(--muted); }
+  .ustatus.stopped { background: #e5e7eb; color: #374151; }
+  .ustatus.restarted { background: #dbeafe; color: #1e40af; }
   .lastcheck-cell { font-size: 12px; color: var(--muted); white-space: nowrap; }
   @media (prefers-color-scheme: dark) {
     .ustatus.success { background: #17351f; color: #6ee7a0; }
@@ -145,16 +140,54 @@
     .ustatus.skipped { background: #33301a; color: #e6d78a; }
     .ustatus.fail { background: #3a1c1c; color: #f0a1a1; }
     .ustatus.running { background: #1e2748; color: #a5b4fc; }
+    .ustatus.stopped { background: #2a2f3a; color: #b8c0cf; }
+    .ustatus.restarted { background: #1c2a3a; color: #8fc4f0; }
   }
+  .action-buttons { display: flex; gap: 5px; flex-wrap: wrap; }
+  .icon-btn { width: 30px; height: 30px; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
+  .icon-btn svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .icon-btn.sched-btn.on { background: #dcfce7; border-color: #86efac; color: #166534; }
+  .icon-btn.confirm { background: #dc2626; border-color: #dc2626; color: #fff; }
+  .icon-btn.busy { animation: pulse 1.2s ease-in-out infinite; }
+  @media (prefers-color-scheme: dark) {
+    .icon-btn.sched-btn.on { background: #17351f; border-color: #2f6b45; color: #6ee7a0; }
+  }
+
+  /* Compose editor */
+  dialog.editor {
+    width: min(900px, 94vw); max-height: 92vh; padding: 0;
+    border: 1px solid var(--border); border-radius: 12px;
+    background: var(--card); color: var(--text); box-shadow: 0 20px 60px rgba(0,0,0,.35);
+  }
+  dialog.editor::backdrop { background: rgba(0,0,0,.45); }
+  .editor-head { display: flex; align-items: flex-start; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--border); }
+  .editor-head h3 { margin: 0; font-size: 15px; }
+  .editor-path { margin-top: 3px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; color: var(--muted); overflow-wrap: anywhere; }
+  .editor-body { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; }
+  #editorText {
+    width: 100%; min-height: 50vh; resize: vertical; padding: 10px;
+    background: var(--input-bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12.5px; line-height: 1.5; tab-size: 2;
+  }
+  #editorText[readonly] { opacity: .75; }
+  .editor-foot { display: flex; align-items: center; gap: 10px; }
+  .editor-foot .muted { flex: 1; }
+  .editor-warning { font-size: 12px; color: #b45309; }
+  @media (prefers-color-scheme: dark) { .editor-warning { color: #f0c08a; } }
 
   /* Check log */
   .log-scroll { height: 40vh; min-height: 160px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; }
-  .log-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .log-table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 13px; }
   .log-table th, .log-table td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border); vertical-align: top; overflow-wrap: anywhere; word-break: break-word; white-space: normal; }
   .log-table td.detail-cell { color: var(--muted); }
   .detail-inner { max-height: 12em; overflow-y: auto; white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; }
   .log-table th { position: sticky; top: 0; background: var(--card); color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
   .log-table tr:last-child td { border-bottom: none; }
+  .log-project { display: block; min-width: 0; max-width: 100%; font-size: 15px; font-weight: 700; line-height: 1.35; color: var(--text); }
+  .log-project .log-file { display: block; margin-top: 2px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; font-weight: 400; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+  .log-project .log-file.expanded { white-space: normal; overflow-wrap: anywhere; }
+  .log-table th:nth-child(3), .log-table td:nth-child(3) { width: 240px; max-width: 240px; }
   .log-cards { display: none; }
   .status.manual { background: #ede9fe; color: #5b21b6; }
   .status.cron { background: #e0f2fe; color: #075985; }
@@ -184,20 +217,31 @@
     }
     .proj-card .card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
     .proj-card .card-title { font-weight: 600; font-size: 15px; }
-    .proj-card .card-title code { background: none; padding: 0; font-size: 15px; }
+    .proj-card .card-title .project-name { font-size: 16px; }
     .proj-card .card-path {
       color: var(--muted); font-size: 12px; margin-top: -6px;
       overflow-wrap: anywhere; word-break: break-all;
     }
     .proj-card.disabled { opacity: .55; }
-    .proj-card .card-lastcheck { font-size: 12px; margin-top: -4px; }
+    .proj-card .card-times { display: flex; gap: 8px; }
+    .proj-card .card-time {
+      display: flex; flex: 1 1 0; flex-direction: column; gap: 2px; min-width: 0;
+      padding: 7px 9px; border: 1px solid var(--border); border-radius: 7px;
+      background: var(--input-bg);
+    }
+    .proj-card .card-time-label { font-size: 10.5px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+    .proj-card .card-time-value { font-size: 12.5px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .proj-card .card-actions {
-      display: flex; gap: 10px; align-items: center; padding-top: 2px;
+      display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding-top: 2px;
       border-top: 1px solid var(--border);
     }
     .proj-card .card-actions label.switch { flex: 1; font-size: 13.5px; min-height: 40px; }
-    .proj-card .card-actions .toggle-wrap { flex: 1; display: flex; align-items: center; }
     .proj-card .card-actions button { flex: none; white-space: nowrap; }
+    .proj-card .card-actions .icon-btn { width: 34px; height: 34px; }
+    .proj-card .card-actions .action-buttons { width: 100%; }
+    dialog.editor { width: 96vw; max-height: 94vh; }
+    .editor-body { padding: 12px; }
+    #editorText { min-height: 55vh; }
     .log-scroll { display: none; }
     .log-cards { display: flex; flex-direction: column; gap: 10px; height: 40vh; min-height: 160px; overflow-y: auto; }
     .log-card {
@@ -205,7 +249,7 @@
       display: flex; flex-direction: column; gap: 6px; background: var(--card);
     }
     .log-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-    .log-card-head code { background: none; padding: 0; font-size: 14px; }
+    .log-card-head .log-project { flex: 1; min-width: 0; overflow-wrap: anywhere; }
     .log-card-meta { font-size: 12px; color: var(--muted); }
     .log-card-detail { font-size: 11.5px; overflow-wrap: anywhere; max-height: 12em; overflow-y: auto; white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   }
@@ -246,13 +290,13 @@
         <label class="filter filter-search">Search
           <input type="text" id="filterSearch" placeholder="project or path">
         </label>
-        <button id="runFilteredBtn" class="secondary small">Run all</button>
+        <button id="runFilteredBtn" class="secondary small">Update all</button>
       </div>
       <div class="filter-summary muted" id="filterSummary"></div>
     </div>
     <div class="proj-scroll">
       <table class="proj-table">
-        <thead><tr><th>Project / file</th><th style="width:110px">Status</th><th style="width:170px">Last check</th><th style="width:170px">Last update</th><th style="width:130px">Scheduled</th><th style="width:160px">Actions</th></tr></thead>
+        <thead><tr><th>Project / file</th><th style="width:110px">Status</th><th style="width:170px">Last check</th><th style="width:170px">Last update</th><th style="width:210px">Actions</th></tr></thead>
         <tbody id="projects"></tbody>
       </table>
     </div>
@@ -265,7 +309,7 @@
     <div class="muted" style="margin-bottom:12px">Recent checks triggered manually or by the scheduler.</div>
     <div class="log-scroll" data-scrollkey="logs-outer">
       <table class="log-table">
-        <thead><tr><th style="width:150px">Time</th><th style="width:80px">Trigger</th><th>Project</th><th style="width:90px">Result</th><th>Detail</th></tr></thead>
+        <thead><tr><th style="width:150px">Time</th><th style="width:80px">Trigger</th><th style="width:240px">Project</th><th style="width:90px">Result</th><th>Detail</th></tr></thead>
         <tbody id="logs"></tbody>
       </table>
     </div>
@@ -294,10 +338,41 @@
     <div style="margin-top:16px"><button id="saveBtn">Save configuration</button></div>
   </section>
 </main>
+<dialog id="editor" class="editor">
+  <div class="editor-head">
+    <div style="flex:1; min-width:0">
+      <h3>Edit compose file</h3>
+      <div class="editor-path" id="editorPath"></div>
+    </div>
+    <button class="secondary small" id="editorClose">Close</button>
+  </div>
+  <div class="editor-body">
+    <div class="editor-warning" id="editorWarning"></div>
+    <textarea id="editorText" spellcheck="false" autocapitalize="off" autocomplete="off"></textarea>
+    <div class="editor-foot">
+      <span class="muted" id="editorInfo"></span>
+      <button id="editorSave">Save</button>
+    </div>
+  </div>
+</dialog>
 <div class="toast" id="toast"></div>
 <script>
 const $ = (id) => document.getElementById(id);
 let state = null;
+// Compose paths expanded by tap/click; kept across the 5s re-render.
+const expandedPaths = new Set();
+let editorFile = null;
+let editorProject = '';
+
+const ICONS = {
+  schedule: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>',
+  check: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="3" x2="12" y2="15"/></svg>',
+  start: '<svg viewBox="0 0 24 24" aria-hidden="true"><polygon points="6 4 20 12 6 20 6 4"/></svg>',
+  stop: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="1.5"/></svg>',
+  restart: '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>',
+  recreate: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 12-8.373 8.373a1 1 0 1 1-3-3L12 9"/><path d="m18 15 4-4"/><path d="m21.5 11.5-1.914-1.914A2 2 0 0 1 19 8.172V7l-2.26-2.26a6 6 0 0 0-4.202-1.756L9 2.96l.92.82A6.18 6.18 0 0 1 12 8.4V10l2 2h1.172a2 2 0 0 1 1.414.586L18.5 14.5"/></svg>',
+  edit: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>'
+};
 
 function toast(msg) {
   const t = $('toast'); t.textContent = msg; t.classList.add('show');
@@ -306,22 +381,31 @@ function toast(msg) {
 
 // wrap runs an action behind a two-step confirmation: the first click arms the
 // button (label becomes confirmLabel), a second click within the timeout runs
-// the action, and any other click cancels. Returns a click handler.
+// the action, and any other click cancels. Returns a click handler. Icon
+// buttons keep their glyph and turn red instead of showing text.
 function dblConfirm(btn, confirmLabel, action) {
-  let armed = false, timer = null, orig = null;
+  let armed = false, timer = null, orig = null, origTitle = null;
   const reset = () => {
     if (timer) { clearTimeout(timer); timer = null; }
     armed = false;
-    if (orig !== null) { btn.textContent = orig; btn.classList.remove('confirm'); orig = null; }
+    btn.classList.remove('confirm');
+    if (orig !== null) { btn.textContent = orig; orig = null; }
+    if (origTitle !== null) { btn.title = origTitle; origTitle = null; }
     window.__confirmArmed = false;
   };
   return () => {
     if (!armed) {
       armed = true;
       window.__confirmArmed = true;
-      orig = btn.textContent;
-      btn.textContent = confirmLabel;
-      btn.classList.add('confirm');
+      if (btn.classList.contains('icon-btn')) {
+        origTitle = btn.title;
+        btn.classList.add('confirm');
+        btn.title = 'Click again to confirm';
+      } else {
+        orig = btn.textContent;
+        btn.textContent = confirmLabel;
+        btn.classList.add('confirm');
+      }
       timer = setTimeout(reset, 4000);
       return;
     }
@@ -331,6 +415,10 @@ function dblConfirm(btn, confirmLabel, action) {
 }
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+async function apiError(res) {
+  const text = await res.text().catch(() => '');
+  return text || ('HTTP ' + res.status);
 }
 
 // Preserve scroll positions of scrollable boxes across re-renders. Keyed by a
@@ -389,6 +477,26 @@ function lastCheckHtml(r) {
   if (!r.when) return '';
   return esc(fmtTime(r.when));
 }
+// agoParts renders a timestamp as a compact relative age for mobile cards. The
+// full localized timestamp is returned separately for the hover title.
+function agoParts(s) {
+  if (!s) return { text: '', full: '' };
+  const d = new Date(s);
+  if (isNaN(d)) return { text: s, full: s };
+  const now = new Date();
+  const sec = Math.max(0, Math.floor((now.getTime() - d.getTime()) / 1000));
+  let text;
+  if (sec < 45) text = 'just now';
+  else if (sec < 3600) text = Math.max(1, Math.floor(sec / 60)) + 'm ago';
+  else if (sec < 86400) text = Math.floor(sec / 3600) + 'h ago';
+  else if (sec < 7 * 86400) text = Math.floor(sec / 86400) + 'd ago';
+  else {
+    const opts = { month: 'short', day: 'numeric' };
+    if (d.getFullYear() !== now.getFullYear()) opts.year = 'numeric';
+    text = d.toLocaleDateString(undefined, opts);
+  }
+  return { text, full: fmtTime(s) };
+}
 // A project is "not updatable" only when a check definitively reported that it
 // has no image-based services (build-only / no image). A "skipped: not selected
 // for scheduled updates" result says nothing about updatability.
@@ -401,10 +509,12 @@ function isNotUpdatable(p, r) {
 // only projects that were never checked show a dash.
 function updateStatusHtml(r) {
   switch (r.status) {
-    case 'updated': case 'pulled': case 'started':
+    case 'updated': case 'pulled': case 'started': case 'restarted': case 'recreated':
       return `<span class="ustatus success">${esc(r.status)}</span>`;
     case 'unchanged':
       return '<span class="ustatus unchanged">unchanged</span>';
+    case 'stopped':
+      return '<span class="ustatus stopped">stopped</span>';
     case 'failed':
       return '<span class="ustatus fail">failed</span>';
     case 'unmounted':
@@ -420,6 +530,8 @@ function updateStatusHtml(r) {
 function projectFields(p, r) {
   const notUpdatable = isNotUpdatable(p, r);
   const updatedAt = r.updated_at || ((state.last_updates || {})[p.file] || '');
+  const checked = agoParts(r.when);
+  const updated = agoParts(updatedAt);
   return {
     key: p.file || p.project,
     scheduled: !!(state.enabled || {})[p.file || p.project],
@@ -428,29 +540,38 @@ function projectFields(p, r) {
     updatable: !notUpdatable,
     // Show the time only when the project was actually checked.
     lastCheck: lastCheckHtml(r),
-    // Last successful update (updated/pulled/started) can be older than the
-    // last check and survives restarts via the persisted config.
+    // Last successful update (updated/pulled/started/recreated) can be older
+    // than the last check and survives restarts via the persisted config.
     lastUpdate: updatedAt ? esc(fmtTime(updatedAt)) : '<span class="muted">—</span>',
+    // Compact mobile card values: relative age plus the full time for hover.
+    lastCheckAgo: checked.full ? esc(checked.text) : '',
+    lastCheckFull: checked.full ? esc(checked.full) : '',
+    lastUpdateAgo: updated.full ? esc(updated.text) : '',
+    lastUpdateFull: updated.full ? esc(updated.full) : '',
   };
 }
 
-function toggleHtml(checked, disabled, title) {
-  return `<label class="toggle"${title ? ` title="${esc(title)}"` : ''}>
-    <input type="checkbox" ${checked ? 'checked' : ''} ${disabled ? 'disabled' : ''}>
-    <span class="slider"></span>
-  </label>`;
-}
-
-function wireCheckbox(cb, key) {
-  cb.addEventListener('change', async (e) => {
-    await fetch('api/project', { method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ file: key, enabled: e.target.checked }) });
-    toast('Saved'); load();
+function wireSchedule(btn, p, enabled) {
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    try {
+      const res = await fetch('api/project', { method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ file: p.file || p.project, enabled: !enabled }) });
+      if (!res.ok) throw new Error(await apiError(res));
+      toast(enabled ? 'Removed from schedule' : 'Added to schedule');
+      await load();
+    } catch (e) {
+      toast('Error: ' + e.message);
+      btn.disabled = false;
+    }
   });
 }
 function wireButton(btn, p) {
+  const isIcon = btn.classList.contains('icon-btn');
   const action = async () => {
-    btn.disabled = true; btn.textContent = 'Checking…';
+    btn.disabled = true;
+    if (isIcon) btn.classList.add('busy');
+    else btn.textContent = 'Checking…';
     try {
       const res = await fetch('api/check', { method: 'POST', headers: {'Content-Type':'application/json'},
         body: JSON.stringify({ file: p.file, working_dir: p.working_dir, project: p.project }) });
@@ -466,9 +587,90 @@ function wireButton(btn, p) {
     } catch (e) {
       toast('Error: ' + e.message);
       btn.disabled = false;
+      if (isIcon) btn.classList.remove('busy');
+      else btn.textContent = 'Check & update';
     }
   };
   btn.addEventListener('click', dblConfirm(btn, 'Confirm?', action));
+}
+
+// Lifecycle actions (start/stop/restart) run asynchronously on the server; the
+// periodic load() picks up the result and progress output.
+function wireAction(btn, p, action) {
+  const run = async () => {
+    btn.disabled = true;
+    try {
+      const res = await fetch('api/action', { method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ file: p.file, project: p.project, action }) });
+      if (!res.ok) throw new Error(await apiError(res));
+      const data = await res.json().catch(() => ({}));
+      if (data.status === 'already-running') {
+        toast(p.project + ' is already busy');
+      } else {
+        toast(action.charAt(0).toUpperCase() + action.slice(1) + 'ing ' + p.project + '…');
+      }
+      await load();
+    } catch (e) {
+      toast('Error: ' + e.message);
+    } finally {
+      btn.disabled = false;
+    }
+  };
+  btn.addEventListener('click', action === 'start' ? run : dblConfirm(btn, 'Confirm?', run));
+}
+
+async function openEditor(p) {
+  if (!p.file) { toast('No compose file to edit'); return; }
+  try {
+    const res = await fetch('api/compose?file=' + encodeURIComponent(p.file)
+      + '&project=' + encodeURIComponent(p.project || ''));
+    if (!res.ok) throw new Error(await apiError(res));
+    const data = await res.json();
+    editorFile = p.file;
+    editorProject = p.project || '';
+    $('editorPath').textContent = p.file;
+    $('editorText').value = data.content || '';
+    $('editorText').readOnly = !data.writable;
+    $('editorSave').disabled = !data.writable;
+    $('editorInfo').textContent = data.writable
+      ? 'Saving keeps the previous version as ' + p.file + '.bak'
+      : 'Read-only inside the container. Mount this directory with :rw to enable editing.';
+    $('editorWarning').textContent = '';
+    $('editor').showModal();
+  } catch (e) {
+    toast('Error: ' + e.message);
+  }
+}
+
+async function saveEditor() {
+  if (!editorFile) return;
+  const btn = $('editorSave');
+  btn.disabled = true;
+  btn.textContent = 'Saving…';
+  try {
+    const res = await fetch('api/compose', { method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ file: editorFile, project: editorProject, content: $('editorText').value }) });
+    if (!res.ok) throw new Error(await apiError(res));
+    const data = await res.json().catch(() => ({}));
+    if (data.warning) {
+      $('editorWarning').textContent = data.warning;
+      toast('Saved with warnings');
+      load();
+    } else {
+      toast('Saved (backup: ' + (data.backup || '.bak') + ')');
+      $('editor').close();
+      load();
+    }
+  } catch (e) {
+    $('editorWarning').textContent = 'Save failed: ' + e.message;
+  } finally {
+    btn.textContent = 'Save';
+    btn.disabled = $('editorText').readOnly;
+  }
+}
+
+function wireEdit(btn, p) {
+  btn.addEventListener('click', () => openEditor(p));
 }
 
 function passesFilters(p, f) {
@@ -521,51 +723,97 @@ function renderProjects() {
     shown++;
     const running = p.running !== false;
     const busy = r.status === 'running';
-    const btnDisabled = !p.mounted || busy; // stopped projects remain manually updatable
-    const btnLabel = busy ? 'Checking…' : 'Check &amp; update';
-    const toggleDisabled = !p.mounted || !running;
-    const toggleTitle = !p.mounted ? 'path not mounted' : (!running ? 'not running — manual only' : '');
-    const toggle = toggleHtml(f.scheduled, toggleDisabled, toggleTitle);
-    const stateTag = (p.mounted ? '' : ' <span class="warn">— not mounted</span>')
-      + (running ? '' : ' <span class="muted">— stopped</span>');
+    const tags = [];
+    if (!p.mounted) tags.push('<span class="warn">not mounted</span>');
+    if (!running) tags.push('<span class="muted">stopped</span>');
+    const stateTag = tags.length ? `<div class="project-tags">— ${tags.join(' · ')}</div>` : '';
+    const iconBtn = (cls, icon, title, disabled, action) =>
+      `<button class="${cls}"${action ? ` data-action="${action}"` : ''}${disabled ? ' disabled' : ''} title="${esc(title)}" aria-label="${esc(title)}">${ICONS[icon]}</button>`;
+    const lockReason = "the updater cannot control its own project";
+    const schedDisabled = !p.mounted || !running;
+    const schedTitle = !p.mounted
+      ? 'path not mounted — scheduling unavailable'
+      : (!running ? 'project is stopped — scheduling unavailable'
+        : (f.scheduled ? 'Scheduled updates: on' : 'Scheduled updates: off'));
+    const schedBtn = `<button class="secondary small icon-btn sched-btn${f.scheduled ? ' on' : ''}"${schedDisabled ? ' disabled' : ''} title="${esc(schedTitle)}" aria-label="${esc(schedTitle)}" aria-pressed="${f.scheduled ? 'true' : 'false'}">${ICONS.schedule}</button>`;
+    const checkBtn = iconBtn('secondary small icon-btn check-btn', 'check',
+      busy ? 'Checking…' : 'Check & update', !p.mounted || busy);
+    const startBtn = iconBtn('secondary small icon-btn act-btn', 'start',
+      'Start project', !p.mounted || busy, 'start');
+    const stopBtn = iconBtn('secondary small icon-btn act-btn', 'stop',
+      p.self ? lockReason : 'Stop project', !p.mounted || busy || p.self, 'stop');
+    const restartBtn = iconBtn('secondary small icon-btn act-btn', 'restart',
+      p.self ? lockReason : 'Restart project', !p.mounted || busy || p.self, 'restart');
+    const recreateBtn = iconBtn('secondary small icon-btn act-btn', 'recreate',
+      p.self ? lockReason : 'Force recreate containers (apply compose changes)', !p.mounted || busy || p.self, 'recreate');
+    const editBtn = iconBtn('secondary small icon-btn edit-btn', 'edit',
+      'View / edit compose file', !p.mounted);
+    const lifecycle = running ? stopBtn + restartBtn + recreateBtn : startBtn + recreateBtn;
+    const fileText = esc(p.file || '(no file)');
+    const expanded = p.file && expandedPaths.has(p.file);
+    const pathAttrs = p.file ? ` data-path="${esc(p.file)}" title="${esc(p.file)}"` : '';
+    const cardTimes = [
+      f.lastCheckFull ? `<div class="card-time">
+          <span class="card-time-label">Checked</span>
+          <span class="card-time-value" title="${f.lastCheckFull}">${f.lastCheckAgo}</span>
+        </div>` : '',
+      f.lastUpdateFull ? `<div class="card-time">
+          <span class="card-time-label">Updated</span>
+          <span class="card-time-value" title="${f.lastUpdateFull}">${f.lastUpdateAgo}</span>
+        </div>` : '',
+    ].join('');
 
     const tr = document.createElement('tr');
     tr.className = p.mounted ? '' : 'unmounted-row';
     tr.innerHTML = `
-      <td><code>${esc(p.project)}</code><div class="muted">${esc(p.file || '(no file)')}${stateTag}</div></td>
+      <td>
+        <span class="project-name">${esc(p.project)}</span>
+        <span class="project-file${expanded ? ' expanded' : ''}"${pathAttrs}>${fileText}</span>
+        ${stateTag}
+      </td>
       <td>${f.updateStatusHtml}</td>
       <td class="lastcheck-cell">${f.lastCheck}</td>
       <td class="lastcheck-cell">${f.lastUpdate}</td>
-      <td class="sched-cell">${toggle}<span class="toggle-label">${f.scheduled ? 'On' : 'Off'}</span></td>
-      <td><button class="secondary small" ${btnDisabled ? 'disabled' : ''}>${btnLabel}</button></td>`;
-    wireCheckbox(tr.querySelector('.toggle input'), f.key);
-    wireButton(tr.querySelector('button'), p);
+      <td><div class="action-buttons">${schedBtn}${checkBtn}${lifecycle}${editBtn}</div></td>`;
+    wireSchedule(tr.querySelector('.sched-btn'), p, f.scheduled);
+    wireButton(tr.querySelector('.check-btn'), p);
+    wireEdit(tr.querySelector('.edit-btn'), p);
+    tr.querySelectorAll('.act-btn').forEach(b => wireAction(b, p, b.dataset.action));
     tbody.appendChild(tr);
 
     const card = document.createElement('div');
     card.className = 'proj-card' + (p.mounted ? '' : ' disabled');
     card.innerHTML = `
       <div class="card-head">
-        <span class="card-title"><code>${esc(p.project)}</code></span>
+        <span class="card-title"><span class="project-name">${esc(p.project)}</span></span>
         ${f.updateStatusHtml}
       </div>
-      <div class="card-path">${esc(p.file || '(no file)')}${stateTag}</div>
-      <div class="card-lastcheck">Checked: ${f.lastCheck || '—'}</div>
-      <div class="card-lastcheck">Last update: ${f.lastUpdate}</div>
+      <div class="card-path project-file${expanded ? ' expanded' : ''}"${pathAttrs}>${fileText}</div>
+      ${stateTag}
+      ${cardTimes ? `<div class="card-times">${cardTimes}</div>` : ''}
       <div class="card-actions">
-        <span class="toggle-wrap">${toggle}<span class="toggle-label">Scheduled</span></span>
-        <button class="secondary small" ${btnDisabled ? 'disabled' : ''}>${btnLabel}</button>
+        <div class="action-buttons">${schedBtn}${checkBtn}${lifecycle}${editBtn}</div>
       </div>`;
-    wireCheckbox(card.querySelector('.toggle input'), f.key);
-    wireButton(card.querySelector('button'), p);
+    wireSchedule(card.querySelector('.sched-btn'), p, f.scheduled);
+    wireButton(card.querySelector('.check-btn'), p);
+    wireEdit(card.querySelector('.edit-btn'), p);
+    card.querySelectorAll('.act-btn').forEach(b => wireAction(b, p, b.dataset.action));
     cards.appendChild(card);
   }
   $('filterSummary').textContent = shown + ' of ' + all.length + ' shown';
   if (!shown) {
     const msg = all.length ? 'No projects match the filters.' : 'No running Compose projects found.';
-    tbody.innerHTML = `<tr><td colspan="6" class="muted">${msg}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="5" class="muted">${msg}</td></tr>`;
     cards.innerHTML = `<div class="muted">${msg}</div>`;
   }
+}
+
+function logProjectHtml(l) {
+  const name = l.project || l.file || '';
+  const expanded = l.file && expandedPaths.has(l.file);
+  const file = l.project && l.file && l.file !== l.project
+    ? `<span class="log-file${expanded ? ' expanded' : ''}" data-path="${esc(l.file)}" title="${esc(l.file)}">${esc(l.file)}</span>` : '';
+  return `<span class="log-project">${esc(name)}${file}</span>`;
 }
 
 function renderLogs() {
@@ -585,7 +833,7 @@ function renderLogs() {
     tr.innerHTML = `
       <td class="muted">${esc(fmtTime(l.when))}</td>
       <td>${trig}</td>
-      <td><code>${esc(l.project || l.file)}</code></td>
+      <td>${logProjectHtml(l)}</td>
       <td>${updateStatusHtml(l)}</td>
       <td class="muted detail-cell"><div class="detail-inner" data-scrollkey="log-${esc(l.file||l.project)}-${esc(l.when)}">${esc(l.detail || '')}</div></td>`;
     tbody.appendChild(tr);
@@ -594,7 +842,7 @@ function renderLogs() {
     card.className = 'log-card';
     card.innerHTML = `
       <div class="log-card-head">
-        <code>${esc(l.project || l.file)}</code>
+        ${logProjectHtml(l)}
         ${updateStatusHtml(l)}
       </div>
       <div class="log-card-meta">${trig} · ${esc(fmtTime(l.when))}</div>
@@ -624,16 +872,16 @@ $('runBtn').addEventListener('click', dblConfirm($('runBtn'), 'Confirm?', async 
   setTimeout(() => { $('runBtn').disabled = false; load(); }, 1500);
 }));
 
-// Run a manual check on every project currently visible under the filters.
+// Check & update every project currently visible under the filters.
 $('runFilteredBtn').addEventListener('click', dblConfirm($('runFilteredBtn'), 'Confirm?', async () => {
   const list = currentFilteredProjects().filter(p => p.mounted);
-  if (!list.length) { toast('No mounted projects to run'); return; }
+  if (!list.length) { toast('No mounted projects to update'); return; }
   $('runFilteredBtn').disabled = true;
   try {
     const res = await fetch('api/check-many', { method: 'POST', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ projects: list.map(p => ({ file: p.file, working_dir: p.working_dir, project: p.project })) }) });
     const data = await res.json().catch(() => ({}));
-    toast('Running ' + (data.started != null ? data.started : list.length) + ' project(s)');
+    toast('Updating ' + (data.started != null ? data.started : list.length) + ' project(s)');
     await load();
   } catch (e) {
     toast('Error: ' + e.message);
@@ -642,8 +890,26 @@ $('runFilteredBtn').addEventListener('click', dblConfirm($('runFilteredBtn'), 'C
   }
 }));
 
+// Long compose paths are truncated with an ellipsis. Desktop shows the full
+// path in the native title tooltip on hover; on touch devices a tap toggles the
+// full path, and the expanded state survives the periodic re-render.
+document.addEventListener('click', (e) => {
+  const el = e.target.closest('.log-file, .project-file');
+  if (!el) return;
+  const path = el.getAttribute('data-path');
+  if (!path) return;
+  if (el.classList.toggle('expanded')) expandedPaths.add(path);
+  else expandedPaths.delete(path);
+});
+
 ['filterUpdate', 'filterCron', 'filterSearch'].forEach(id => {
   $(id).addEventListener('input', () => { if (state) renderProjects(); });
+});
+
+$('editorClose').addEventListener('click', () => $('editor').close());
+$('editorSave').addEventListener('click', saveEditor);
+$('editor').addEventListener('click', (e) => {
+  if (e.target === $('editor')) $('editor').close(); // click on the backdrop
 });
 
 load();

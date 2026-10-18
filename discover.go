@@ -11,14 +11,16 @@ import (
 // daemon (no filesystem scan required to list it). Both running and stopped
 // projects are listed; the Running flag distinguishes them.
 type composeProject struct {
-	Project     string `json:"project"`      // com.docker.compose.project
-	File        string `json:"file"`         // primary compose file path (host view)
-	ConfigFiles string `json:"config_files"` // raw config_files label (may be comma-separated)
-	WorkingDir  string `json:"working_dir"`  // com.docker.compose.project.working_dir
-	Mounted     bool   `json:"mounted"`      // whether File is readable inside this container
-	Running     bool   `json:"running"`      // whether the project has any running container
-	Services    int    `json:"services"`     // number of running containers in the project
-	Total       int    `json:"total"`        // number of containers (running or stopped)
+	Project     string `json:"project"`        // com.docker.compose.project
+	File        string `json:"file"`           // primary compose file path (host view)
+	ConfigFiles string `json:"config_files"`   // raw config_files label (may be comma-separated)
+	WorkingDir  string `json:"working_dir"`    // com.docker.compose.project.working_dir
+	Mounted     bool   `json:"mounted"`        // whether File is readable inside this container
+	Writable    bool   `json:"writable"`       // whether File can be edited through the web UI
+	Self        bool   `json:"self,omitempty"` // this updater's own project
+	Running     bool   `json:"running"`        // whether the project has any running container
+	Services    int    `json:"services"`       // number of running containers in the project
+	Total       int    `json:"total"`          // number of containers (running or stopped)
 }
 
 // discoverRunningProjects lists compose projects by reading Docker container
@@ -46,7 +48,7 @@ func (u *updater) discoverRunningProjects(ctx context.Context) ([]composeProject
 	const format = `{{index .Config.Labels "com.docker.compose.project"}}|` +
 		`{{index .Config.Labels "com.docker.compose.project.config_files"}}|` +
 		`{{index .Config.Labels "com.docker.compose.project.working_dir"}}|` +
-		`{{.State.Running}}`
+		`{{.State.Running}}|{{.Id}}`
 	inspectArgs := append([]string{"inspect", "--format", format}, ids...)
 	out, err := u.runDocker(ctx, "", inspectArgs)
 	if err != nil {
@@ -59,11 +61,24 @@ func (u *updater) discoverRunningProjects(ctx context.Context) ([]composeProject
 		if line == "" {
 			continue
 		}
-		parts := strings.SplitN(line, "|", 4)
-		if len(parts) != 4 || strings.TrimSpace(parts[0]) == "" {
+		parts := strings.SplitN(line, "|", 5)
+		if len(parts) != 5 {
+			continue
+		}
+		// Docker's Go templates print "<no value>" for missing labels; treat it
+		// as empty so containers that are not part of a Compose project are
+		// skipped instead of appearing as a bogus project.
+		field := func(i int) string {
+			s := strings.TrimSpace(parts[i])
+			if s == "<no value>" {
+				return ""
+			}
+			return s
+		}
+		proj, configFiles, workdir, running, containerID := field(0), field(1), field(2), field(3), field(4)
+		if proj == "" {
 			continue // not a compose container
 		}
-		proj, configFiles, workdir, running := parts[0], parts[1], parts[2], parts[3]
 		key := proj + "\x00" + configFiles
 		p, ok := byKey[key]
 		if !ok {
@@ -74,8 +89,12 @@ func (u *updater) discoverRunningProjects(ctx context.Context) ([]composeProject
 				ConfigFiles: configFiles,
 				WorkingDir:  workdir,
 				Mounted:     primary != "" && fileReadable(primary),
+				Writable:    primary != "" && fileWritable(primary),
 			}
 			byKey[key] = p
+		}
+		if u.selfID != "" && strings.HasPrefix(strings.TrimSpace(containerID), u.selfID) {
+			p.Self = true
 		}
 		p.Total++
 		if strings.TrimSpace(running) == "true" {
@@ -125,6 +144,17 @@ func (u *updater) projectRunning(ctx context.Context, project string) bool {
 // fileReadable reports whether path exists and can be opened for reading.
 func fileReadable(path string) bool {
 	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	_ = f.Close()
+	return true
+}
+
+// fileWritable reports whether path can be opened for writing. It does not
+// modify the file or its contents.
+func fileWritable(path string) bool {
+	f, err := os.OpenFile(path, os.O_WRONLY, 0)
 	if err != nil {
 		return false
 	}

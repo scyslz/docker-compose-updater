@@ -20,9 +20,10 @@ services:
       # as updater.json to seed initial values.
       - ./config:/config
       # Mount the directories that contain your Compose projects at the SAME
-      # absolute path the Docker daemon reports, read-only. The updater needs
-      # to read the compose files to detect images/build; the running project
-      # list itself is discovered from Docker labels (no mount needed for that).
+      # absolute path the Docker daemon reports. The updater needs to read the
+      # compose files to detect images/build; the running project list itself is
+      # discovered from Docker labels (no mount needed for that). Use :rw
+      # instead of :ro if you want to edit compose files from the web UI.
       #
       # Example: if `docker ps` labels show
       #   com.docker.compose.project.config_files=/home/hq/docker-data/foo/docker-compose.yml

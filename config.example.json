@@ -4,5 +4,7 @@
   "run_on_start": true,
   "auto_update": true,
   "command_timeout": "30m",
-  "enabled_projects": {}
+  "enabled_projects": {},
+  "imported_projects": [],
+  "hidden_projects": []
 }

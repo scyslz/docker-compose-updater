@@ -108,7 +108,7 @@
   .filter { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--muted); }
   .filter select, .filter input { padding: 6px 9px; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; font-family: inherit; font-size: 13px; }
   .filter input { width: 200px; }
-  #runFilteredBtn { margin-left: auto; align-self: end; }
+  .filter-actions { margin-left: auto; align-self: end; display: flex; gap: 8px; }
   .filter-summary { font-size: 12px; margin-top: 8px; }
   .proj-scroll { height: 58vh; min-height: 220px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; }
   .proj-table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 14px; }
@@ -119,6 +119,32 @@
   .project-file { display: block; margin-top: 3px; max-width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
   .project-file.expanded { white-space: normal; overflow-wrap: anywhere; }
   .project-tags { margin-top: 2px; font-size: 11.5px; }
+  .state-pill {
+    display: inline-flex; align-items: center; gap: 5px; margin-left: 7px;
+    padding: 1px 7px 1px 6px; border: 1px solid var(--border); border-radius: 999px;
+    font-size: 10.5px; font-weight: 500; letter-spacing: .01em;
+    vertical-align: 1px; white-space: nowrap; color: var(--muted);
+  }
+  .state-pill::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .state-pill.ok { color: #166534; background: #f0fdf4; border-color: #bbf7d0; }
+  .state-pill.warn { color: #b45309; background: #fffbeb; border-color: #fde68a; }
+  .state-pill.bad { color: #b91c1c; background: #fef2f2; border-color: #fecaca; }
+  .state-pill.off { color: var(--muted); background: transparent; }
+  .type-pill {
+    display: inline-flex; align-items: center; margin-left: 6px; padding: 0 7px;
+    border: 1px solid #c7d2fe; border-radius: 999px;
+    font-size: 10.5px; font-weight: 500; color: #4338ca; background: #eef2ff;
+    vertical-align: 1px; white-space: nowrap;
+  }
+  .type-pill.unmounted { color: #b45309; background: #fffbeb; border-color: #fde68a; }
+  @media (prefers-color-scheme: dark) {
+    .state-pill.ok { color: #6ee7a0; background: rgba(22,101,52,.25); border-color: #2f6b45; }
+    .state-pill.warn { color: #f0c08a; background: rgba(180,83,9,.22); border-color: #7c5a24; }
+    .state-pill.bad { color: #fca5a5; background: rgba(185,28,28,.22); border-color: #7f2a2a; }
+    .state-pill.off { color: var(--muted); background: transparent; }
+    .type-pill { color: #c7d2fe; background: rgba(67,56,202,.25); border-color: #3f3f8f; }
+    .type-pill.unmounted { color: #f0c08a; background: rgba(180,83,9,.22); border-color: #7c5a24; }
+  }
   .lastcheck { font-size: 12px; margin-top: 4px; }
   .lastcheck span { font-size: 12px; }
   tr.unmounted-row { opacity: .55; }
@@ -132,6 +158,7 @@
   .ustatus.skipped { background: #fef3c7; color: #854d0e; }
   .ustatus.none { background: transparent; color: var(--muted); }
   .ustatus.stopped { background: #e5e7eb; color: #374151; }
+  .ustatus.processing { background: #e0e7ff; color: #3730a3; animation: pulse 1.2s ease-in-out infinite; }
   .ustatus.restarted { background: #dbeafe; color: #1e40af; }
   .lastcheck-cell { font-size: 12px; color: var(--muted); white-space: nowrap; }
   @media (prefers-color-scheme: dark) {
@@ -141,6 +168,7 @@
     .ustatus.fail { background: #3a1c1c; color: #f0a1a1; }
     .ustatus.running { background: #1e2748; color: #a5b4fc; }
     .ustatus.stopped { background: #2a2f3a; color: #b8c0cf; }
+    .ustatus.processing { background: #1e2748; color: #a5b4fc; }
     .ustatus.restarted { background: #1c2a3a; color: #8fc4f0; }
   }
   .action-buttons { display: flex; gap: 5px; flex-wrap: nowrap; align-items: center; }
@@ -173,8 +201,32 @@
   #editorText[readonly] { opacity: .75; }
   .editor-foot { display: flex; align-items: center; gap: 10px; }
   .editor-foot .muted { flex: 1; }
-  .editor-warning { font-size: 12px; color: #b45309; }
+  .editor-warning { font-size: 12px; color: #b45309; white-space: pre-line; }
   @media (prefers-color-scheme: dark) { .editor-warning { color: #f0c08a; } }
+
+  /* Folder picker */
+  dialog.dir-picker { width: min(560px, 94vw); }
+  .dir-list {
+    max-height: 52vh; overflow-y: auto; border: 1px solid var(--border);
+    border-radius: 8px; background: var(--card);
+  }
+  .dir-item {
+    display: flex; align-items: center; gap: 9px; width: 100%; margin: 0;
+    padding: 8px 12px; border: 0; border-bottom: 1px solid var(--border);
+    border-radius: 0; background: transparent; color: var(--text);
+    font-size: 13px; text-align: left; cursor: pointer; box-shadow: none;
+  }
+  .dir-item:last-child { border-bottom: 0; }
+  .dir-item:hover { background: var(--input-bg); }
+  .dir-item .dir-icon { color: var(--muted); display: inline-flex; }
+  .dir-item .dir-icon svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .dir-empty { padding: 12px; color: var(--muted); font-size: 13px; }
+  .dir-new { display: flex; align-items: center; gap: 8px; }
+  .dir-new[hidden] { display: none; }
+  .dir-new input {
+    flex: 1; min-width: 0; padding: 7px 9px; border: 1px solid var(--border);
+    border-radius: 7px; background: var(--input-bg); color: var(--text); font-size: 13px;
+  }
 
   /* Check log */
   .log-scroll { height: 40vh; min-height: 160px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; }
@@ -201,36 +253,33 @@
     header { padding: 12px 14px; }
     main { padding: 12px; }
     section { padding: 14px; border-radius: 12px; }
-    .filter-row { gap: 8px; align-items: center; }
-    .filter { font-size: 11px; }
-    .filter select { flex: 0 0 auto; }
-    .filter input { width: auto; min-width: 0; }
-    .filter-search { flex: 1 1 100px; }
-    .filter-search input { width: 100%; }
-    #runFilteredBtn { margin-left: 0; align-self: auto; }
+    .filter-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; align-items: end; }
+    .filter { font-size: 11px; min-width: 0; }
+    .filter select { width: 100%; }
+    .filter input { width: 100%; min-width: 0; }
+    .filter-search { grid-column: span 2; }
+    .filter-actions { grid-column: 1 / -1; margin-left: 0; width: 100%; justify-content: flex-end; }
     .filter-summary { text-align: right; }
     .proj-scroll { display: none; }
-    .proj-cards { display: flex; flex-direction: column; gap: 12px; height: 60vh; min-height: 220px; overflow-y: auto; }
+    .proj-cards { display: flex; flex-direction: column; gap: 8px; height: calc(4 * 129px + 3 * 8px); min-height: 220px; overflow-y: auto; }
     .proj-card {
-      border: 1px solid var(--border); border-radius: 10px; padding: 14px;
-      display: flex; flex-direction: column; gap: 12px; background: var(--card);
+      border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px;
+      display: flex; flex-direction: column; gap: 8px; background: var(--card);
     }
     .proj-card .card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
     .proj-card .card-title { font-weight: 600; font-size: 15px; }
-    .proj-card .card-title .project-name { font-size: 16px; }
+    .proj-card .card-title .project-name { font-size: 15.5px; display: inline; }
     .proj-card .card-path {
-      color: var(--muted); font-size: 12px; margin-top: -6px;
-      overflow-wrap: anywhere; word-break: break-all;
+      color: var(--muted); font-size: 11.5px; margin-top: -4px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
     .proj-card.disabled { opacity: .55; }
-    .proj-card .card-times { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .proj-card .card-times { display: flex; gap: 12px; flex-wrap: wrap; }
     .proj-card .card-time {
-      display: flex; flex-direction: column; gap: 2px; min-width: 0;
-      padding: 7px 9px; border: 1px solid var(--border); border-radius: 7px;
-      background: var(--input-bg);
+      display: flex; flex-direction: row; align-items: baseline; gap: 4px; min-width: 0;
     }
-    .proj-card .card-time-label { font-size: 10.5px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
-    .proj-card .card-time-value { font-size: 12.5px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .proj-card .card-time-label { font-size: 10px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+    .proj-card .card-time-value { font-size: 11.5px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .proj-card .card-actions {
       display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding-top: 2px;
       border-top: 1px solid var(--border);
@@ -286,10 +335,29 @@
             <option value="off">Disabled</option>
           </select>
         </label>
+        <label class="filter">State
+          <select id="filterState">
+            <option value="all">All</option>
+            <option value="running">Running</option>
+            <option value="stopped">Stopped</option>
+            <option value="imported">Imported</option>
+            <option value="problems">Problems</option>
+          </select>
+        </label>
+        <label class="filter">Type
+          <select id="filterType">
+            <option value="all">All</option>
+            <option value="compose">Compose</option>
+            <option value="standalone">Standalone</option>
+          </select>
+        </label>
         <label class="filter filter-search">Search
           <input type="text" id="filterSearch" placeholder="project or path">
         </label>
-        <button id="runFilteredBtn" class="secondary small">Update all</button>
+        <div class="filter-actions">
+          <button id="importBtn" class="secondary small">Import</button>
+          <button id="runFilteredBtn" class="secondary small">Upgrade all</button>
+        </div>
       </div>
       <div class="filter-summary muted" id="filterSummary"></div>
     </div>
@@ -354,6 +422,28 @@
     </div>
   </div>
 </dialog>
+<dialog id="dirPicker" class="editor dir-picker">
+  <div class="editor-head">
+    <div style="flex:1; min-width:0">
+      <h3 id="dirTitle">Choose save folder</h3>
+      <div class="editor-path" id="dirPath"></div>
+    </div>
+    <button class="secondary small" id="dirClose">Cancel</button>
+  </div>
+  <div class="editor-body">
+    <div class="editor-warning" id="dirWarning"></div>
+    <div class="dir-list" id="dirList"></div>
+    <div class="dir-new" id="dirNewRow" hidden>
+      <input id="dirNewName" placeholder="New folder name" autocomplete="off">
+      <button class="secondary small" id="dirNewCreate">Create</button>
+    </div>
+    <div class="editor-foot">
+      <button class="secondary small" id="dirNewBtn">New folder</button>
+      <span class="muted" id="dirInfo"></span>
+      <button id="dirSelect">Select this folder</button>
+    </div>
+  </div>
+</dialog>
 <div class="toast" id="toast"></div>
 <script>
 const $ = (id) => document.getElementById(id);
@@ -370,7 +460,10 @@ const ICONS = {
   stop: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="1.5"/></svg>',
   restart: '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>',
   recreate: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 12-8.373 8.373a1 1 0 1 1-3-3L12 9"/><path d="m18 15 4-4"/><path d="m21.5 11.5-1.914-1.914A2 2 0 0 1 19 8.172V7l-2.26-2.26a6 6 0 0 0-4.202-1.756L9 2.96l.92.82A6.18 6.18 0 0 1 12 8.4V10l2 2h1.172a2 2 0 0 1 1.414.586L18.5 14.5"/></svg>',
-  edit: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>'
+  edit: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
+  convert: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>',
+  folder: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
+  trash: '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>'
 };
 
 function toast(msg) {
@@ -539,8 +632,8 @@ function updateStatusHtml(r) {
       return '<span class="ustatus fail">failed</span>';
     case 'unmounted':
       return '<span class="ustatus fail">unmounted</span>';
-    case 'running':
-      return '<span class="ustatus running">running</span>';
+    case 'processing':
+      return '<span class="ustatus processing">processing</span>';
     case 'skipped':
       return '<span class="ustatus skipped">skipped</span>';
     default:
@@ -617,6 +710,25 @@ function wireButton(btn, p) {
 // Lifecycle actions (start/stop/restart) run asynchronously on the server; the
 // periodic load() picks up the result and progress output.
 function wireAction(btn, p, action) {
+  if (action === 'convert') { btn.addEventListener('click', () => openConvert(p)); return; }
+  if (action === 'unimport' || action === 'delete') {
+    const deleting = action === 'delete';
+    btn.addEventListener('click', dblConfirm(btn, 'Remove?', async () => {
+      btn.disabled = true;
+      try {
+        const res = await fetch(deleting ? 'api/delete' : 'api/unimport', { method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ file: p.file, project: p.project }) });
+        if (!res.ok) throw new Error(await apiError(res));
+        toast('Removed ' + p.project + ' from the list');
+        await load();
+      } catch (e) {
+        toast('Error: ' + e.message);
+      } finally {
+        btn.disabled = false;
+      }
+    }));
+    return;
+  }
   const run = async () => {
     btn.disabled = true;
     try {
@@ -663,7 +775,31 @@ async function openEditor(p) {
 }
 
 async function saveEditor() {
-  if (!editorFile) return;
+  if (!editorFile) {
+    // convert flow: save to a chosen folder
+    const dir = await pickDirectory($('editorSave').dataset.dir || '/tmp/converted');
+    if (!dir) return;
+    $('editorPath').textContent = dir.replace(/\/+$/, '') + '/compose.yaml';
+    const btn = $('editorSave');
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      const res = await fetch('api/compose/save-new', { method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ dir, content: $('editorText').value }) });
+      if (!res.ok) throw new Error(await apiError(res));
+      const data = await res.json();
+      if (data.warning) {
+        $('editorWarning').textContent = 'Saved to ' + data.file + ', but ' + data.warning;
+        toast('Saved with warnings');
+        load();
+      } else {
+        toast('Saved: ' + data.file);
+        $('editor').close();
+        load();
+      }
+    } catch (e) { $('editorWarning').textContent = 'Save failed: ' + e.message; }
+    finally { btn.textContent = 'Save'; btn.disabled = false; }
+    return;
+  }
   const btn = $('editorSave');
   btn.disabled = true;
   btn.textContent = 'Saving…';
@@ -690,6 +826,7 @@ async function saveEditor() {
 }
 
 function wireEdit(btn, p) {
+  if (!btn) return; // standalone containers have no compose file to edit
   btn.addEventListener('click', () => openEditor(p));
 }
 
@@ -701,6 +838,17 @@ function passesFilters(p, f) {
   if (fu === 'ineligible' && f.updatable) return false;
   if (fc === 'on' && !f.scheduled) return false;
   if (fc === 'off' && f.scheduled) return false;
+  const fs = $('filterState').value;
+  if (fs !== 'all') {
+    const problems = p.health === 'unhealthy' || p.restarting;
+    if (fs === 'running' && !p.running) return false;
+    if (fs === 'stopped' && (p.running || p.imported)) return false;
+    if (fs === 'imported' && !p.imported) return false;
+    if (fs === 'problems' && !problems) return false;
+  }
+  const ft = $('filterType').value;
+  if (ft === 'compose' && p.compose === false) return false;
+  if (ft === 'standalone' && p.compose !== false) return false;
   if (q) {
     const hay = ((p.project || '') + ' ' + (p.file || '')).toLowerCase();
     if (!hay.includes(q)) return false;
@@ -713,7 +861,7 @@ function filteredProjects() {
   const statusByFile = {};
   (state.results || []).forEach(r => statusByFile[r.file] = r);
   (state.logs || []).forEach(l => {
-    if (l.status === 'running' && l.file) statusByFile[l.file] = { file: l.file, status: 'running', detail: l.detail || 'checking…', when: l.when };
+    if (l.status === 'processing' && l.file) statusByFile[l.file] = { file: l.file, status: 'processing', detail: l.detail || 'checking…', when: l.when };
   });
   const out = [];
   for (const p of (state.projects || [])) {
@@ -725,6 +873,24 @@ function filteredProjects() {
 }
 function currentFilteredProjects() { return filteredProjects(); }
 
+function projectState(p, isCompose) {
+  if (!isCompose) {
+    if (!p.running) return { label: 'stopped', cls: 'off', title: 'container is stopped' };
+    if (p.restarting) return { label: 'restarting', cls: 'warn', title: 'container is restarting' };
+    if (p.health === 'unhealthy') return { label: 'unhealthy', cls: 'bad', title: 'healthcheck is failing' };
+    if (p.health === 'starting') return { label: 'starting', cls: 'warn', title: 'healthcheck is starting' };
+    return { label: 'running', cls: 'ok', title: 'container is running' };
+  }
+  if (p.imported) return { label: 'imported', cls: 'off', title: 'imported compose file; no containers created yet' };
+  if (p.total > 0 && p.services === 0) return { label: 'stopped', cls: 'off', title: 'no running containers' };
+  if (p.restarting) return { label: 'restarting', cls: 'warn', title: 'a container is restarting' };
+  if (p.health === 'unhealthy') return { label: 'unhealthy', cls: 'bad', title: 'a container healthcheck is failing' };
+  const counts = (p.total || 0) > 1 ? ` ${p.services}/${p.total}` : '';
+  if (p.services < p.total) return { label: 'partial' + counts, cls: 'warn', title: 'only some containers are running' };
+  if (p.health === 'starting') return { label: 'starting' + counts, cls: 'warn', title: 'a healthcheck is starting' };
+  return { label: 'running' + counts, cls: 'ok', title: p.services + ' of ' + p.total + ' container(s) running' };
+}
+
 function renderProjects() {
   const tbody = $('projects'); const cards = $('projectsCards');
   tbody.innerHTML = ''; cards.innerHTML = '';
@@ -732,7 +898,7 @@ function renderProjects() {
   (state.results || []).forEach(r => statusByFile[r.file] = r);
   // Overlay any in-progress checks so the row shows "running".
   (state.logs || []).forEach(l => {
-    if (l.status === 'running' && l.file) statusByFile[l.file] = { file: l.file, status: 'running', detail: l.detail || 'checking…', when: l.when };
+    if (l.status === 'processing' && l.file) statusByFile[l.file] = { file: l.file, status: 'processing', detail: l.detail || 'checking…', when: l.when };
   });
   const all = state.projects || [];
   let shown = 0;
@@ -743,37 +909,73 @@ function renderProjects() {
     shown++;
     const running = p.running !== false;
     const busy = r.status === 'running';
-    const tags = [];
-    if (!p.mounted) tags.push('<span class="warn">not mounted</span>');
-    if (!running) tags.push('<span class="muted">stopped</span>');
-    const stateTag = tags.length ? `<div class="project-tags">— ${tags.join(' · ')}</div>` : '';
+    const isCompose = p.compose !== false;
+    // A standalone container has no compose file, so "not mounted" does not
+    // apply to it: it can still be started, stopped, restarted, and converted.
+    const unmounted = isCompose && !p.mounted;
+    const st = projectState(p, isCompose);
+    const typePill = isCompose
+      ? ''
+      : ' <span class="type-pill" title="standalone Docker container, not managed by Compose">standalone</span>';
+    const mountPill = unmounted
+      ? ' <span class="type-pill unmounted" title="compose file is not readable inside the container">not mounted</span>'
+      : '';
     const iconBtn = (cls, icon, title, disabled, action) =>
       `<button class="${cls}"${action ? ` data-action="${action}"` : ''}${disabled ? ' disabled' : ''} title="${esc(title)}" aria-label="${esc(title)}">${ICONS[icon]}</button>`;
     const lockReason = "the updater cannot control its own project";
-    const schedDisabled = !p.mounted || !running;
-    const schedTitle = !p.mounted
-      ? 'path not mounted — scheduling unavailable'
-      : (!running ? 'project is stopped — scheduling unavailable'
-        : (f.scheduled ? 'Scheduled updates: on' : 'Scheduled updates: off'));
+    const schedDisabled = !isCompose || !p.mounted || !running;
+    const schedTitle = !isCompose
+      ? 'standalone container — scheduling unavailable (convert to Compose first)'
+      : (!p.mounted
+        ? 'path not mounted — scheduling unavailable'
+        : (!running ? 'project is stopped — scheduling unavailable'
+          : (f.scheduled ? 'Scheduled updates: on' : 'Scheduled updates: off')));
     const schedBtn = `<button class="secondary small icon-btn sched-btn${f.scheduled ? ' on' : ''}"${schedDisabled ? ' disabled' : ''} title="${esc(schedTitle)}" aria-label="${esc(schedTitle)}" aria-pressed="${f.scheduled ? 'true' : 'false'}">${ICONS.schedule}</button>`;
     const checkBtn = iconBtn('secondary small icon-btn check-btn', 'check',
-      busy ? 'Checking…' : 'Check & update', !p.mounted || busy);
+      !isCompose ? 'standalone container — no compose file to check' : (busy ? 'Checking…' : 'Check & update'),
+      !isCompose || !p.mounted || busy);
     const startBtn = iconBtn('secondary small icon-btn act-btn', 'start',
-      running ? 'Project is already running' : 'Start project', !p.mounted || busy || running, 'start');
+      running ? (isCompose ? 'Project is already running' : 'Container is already running')
+        : (isCompose ? 'Start project' : 'Start container'),
+      busy || running || unmounted, 'start');
     const stopBtn = iconBtn('secondary small icon-btn act-btn', 'stop',
-      p.self ? lockReason : (!running ? 'Project is already stopped' : 'Stop project'),
-      !p.mounted || busy || p.self || !running, 'stop');
+      p.self ? lockReason : (!running ? (isCompose ? 'Project is already stopped' : 'Container is already stopped')
+        : (isCompose ? 'Stop project' : 'Stop container')),
+      busy || p.self || !running || unmounted, 'stop');
     const restartBtn = iconBtn('secondary small icon-btn act-btn', 'restart',
-      p.self ? lockReason : (!running ? 'Start the project before restarting' : 'Restart project'),
-      !p.mounted || busy || p.self || !running, 'restart');
+      p.self ? lockReason : (!running ? 'Start the ' + (isCompose ? 'project' : 'container') + ' before restarting'
+        : (isCompose ? 'Restart project' : 'Restart container')),
+      busy || p.self || !running || unmounted, 'restart');
     const recreateBtn = iconBtn('secondary small icon-btn act-btn', 'recreate',
-      p.self ? lockReason : 'Force recreate containers (apply compose changes)', !p.mounted || busy || p.self, 'recreate');
-    const editBtn = iconBtn('secondary small icon-btn edit-btn', 'edit',
-      'View / edit compose file', !p.mounted);
-    const lifecycle = startBtn + stopBtn + restartBtn + recreateBtn;
-    const fileText = esc(p.file || '(no file)');
-    const expanded = p.file && expandedPaths.has(p.file);
-    const pathAttrs = p.file ? ` data-path="${esc(p.file)}" title="${esc(p.file)}"` : '';
+      isCompose
+        ? (p.self ? lockReason : 'Force recreate containers (apply compose changes)')
+        : 'Convert to Compose first to enable recreate',
+      isCompose ? (!p.mounted || busy || p.self) : true, 'recreate');
+    const removable = !running && (p.imported || !isCompose || p.mounted);
+    const removeTitle = p.imported
+      ? 'Remove from list (the compose file is kept on disk)'
+      : 'Remove from list (containers, volumes and files are kept)';
+    const removeBtn = iconBtn('secondary small icon-btn act-btn remove-btn', 'trash',
+      removeTitle, busy, p.imported ? 'unimport' : 'delete');
+    const editBtn = isCompose
+      ? iconBtn('secondary small icon-btn edit-btn', 'edit', 'View / edit compose file', !p.mounted)
+      : '';
+    const convertBtn = isCompose
+      ? ''
+      : iconBtn('secondary small icon-btn act-btn', 'convert', 'Convert to Compose', busy, 'convert');
+    // View/edit and Convert share the last slot: the former for Compose
+    // projects, the latter for standalone containers.
+    // Stopped projects get a remove button instead of recreate; running
+    // projects never offer it.
+    const lifecycle = startBtn + stopBtn + restartBtn
+      + (removable ? removeBtn : recreateBtn);
+    const fileText = isCompose ? esc(p.file || '(no file)') : '';
+    const expanded = isCompose && p.file && expandedPaths.has(p.file);
+    const pathAttrs = isCompose && p.file ? ` data-path="${esc(p.file)}" title="${esc(p.file)}"` : '';
+    // Standalone containers only get the single "— standalone" tag line.
+    const fileHtml = fileText
+      ? `<span class="project-file${expanded ? ' expanded' : ''}"${pathAttrs}>${fileText}</span>`
+      : '';
     const cardTimes = [
       f.lastCheckFull ? `<div class="card-time">
           <span class="card-time-label">Checked</span>
@@ -786,17 +988,16 @@ function renderProjects() {
     ].join('');
 
     const tr = document.createElement('tr');
-    tr.className = p.mounted ? '' : 'unmounted-row';
+    tr.className = unmounted ? 'unmounted-row' : '';
     tr.innerHTML = `
       <td>
-        <span class="project-name">${esc(p.project)}</span>
-        <span class="project-file${expanded ? ' expanded' : ''}"${pathAttrs}>${fileText}</span>
-        ${stateTag}
+        <span class="project-name">${esc(p.project)}</span><span class="state-pill ${st.cls}" title="${esc(st.title)}">${esc(st.label)}</span>${typePill}${mountPill}
+        ${fileHtml}
       </td>
       <td>${f.updateStatusHtml}</td>
       <td class="lastcheck-cell">${f.lastCheck}</td>
       <td class="lastcheck-cell">${f.lastUpdate}</td>
-      <td><div class="action-buttons">${schedBtn}${checkBtn}${lifecycle}${editBtn}</div></td>`;
+      <td><div class="action-buttons">${schedBtn}${checkBtn}${lifecycle}${editBtn}${convertBtn}</div></td>`;
     wireSchedule(tr.querySelector('.sched-btn'), p, f.scheduled);
     wireButton(tr.querySelector('.check-btn'), p);
     wireEdit(tr.querySelector('.edit-btn'), p);
@@ -804,17 +1005,16 @@ function renderProjects() {
     tbody.appendChild(tr);
 
     const card = document.createElement('div');
-    card.className = 'proj-card' + (p.mounted ? '' : ' disabled');
+    card.className = 'proj-card' + (unmounted ? ' disabled' : '');
     card.innerHTML = `
       <div class="card-head">
-        <span class="card-title"><span class="project-name">${esc(p.project)}</span></span>
+        <span class="card-title"><span class="project-name">${esc(p.project)}</span><span class="state-pill ${st.cls}" title="${esc(st.title)}">${esc(st.label)}</span>${typePill}${mountPill}</span>
         ${f.updateStatusHtml}
       </div>
-      <div class="card-path project-file${expanded ? ' expanded' : ''}"${pathAttrs}>${fileText}</div>
-      ${stateTag}
+      ${fileHtml ? `<div class="card-path project-file${expanded ? ' expanded' : ''}"${pathAttrs}>${fileText}</div>` : ''}
       ${cardTimes ? `<div class="card-times">${cardTimes}</div>` : ''}
       <div class="card-actions">
-        <div class="action-buttons">${schedBtn}${checkBtn}${lifecycle}${editBtn}</div>
+        <div class="action-buttons">${schedBtn}${checkBtn}${lifecycle}${editBtn}${convertBtn}</div>
       </div>`;
     wireSchedule(card.querySelector('.sched-btn'), p, f.scheduled);
     wireButton(card.querySelector('.check-btn'), p);
@@ -824,7 +1024,7 @@ function renderProjects() {
   }
   $('filterSummary').textContent = shown + ' of ' + all.length + ' shown';
   if (!shown) {
-    const msg = all.length ? 'No projects match the filters.' : 'No running Compose projects found.';
+    const msg = all.length ? 'No projects match the filters.' : 'No Compose projects found. Start one, import a compose file, or convert a standalone container.';
     tbody.innerHTML = `<tr><td colspan="5" class="muted">${msg}</td></tr>`;
     cards.innerHTML = `<div class="muted">${msg}</div>`;
   }
@@ -833,7 +1033,7 @@ function renderProjects() {
 function logProjectHtml(l) {
   const name = l.project || l.file || '';
   const expanded = l.file && expandedPaths.has(l.file);
-  const file = l.project && l.file && l.file !== l.project
+  const file = l.project && l.file && l.file !== l.project && !l.file.startsWith('container:')
     ? `<span class="log-file${expanded ? ' expanded' : ''}" data-path="${esc(l.file)}" title="${esc(l.file)}">${esc(l.file)}</span>` : '';
   return `<span class="log-project">${esc(name)}${file}</span>`;
 }
@@ -924,10 +1124,147 @@ document.addEventListener('click', (e) => {
   else expandedPaths.delete(path);
 });
 
-['filterUpdate', 'filterCron', 'filterSearch'].forEach(id => {
+['filterUpdate', 'filterCron', 'filterState', 'filterType', 'filterSearch'].forEach(id => {
   $(id).addEventListener('input', () => { if (state) renderProjects(); });
 });
 
+// Folder picker for the convert save flow: browse server-side directories
+// instead of typing a path.
+let dirPickerResolve = null;
+let currentDir = '/';
+let lastDir = '/';
+
+function pickDirectory(start, title) {
+  return new Promise((resolve) => {
+    if (dirPickerResolve) dirPickerResolve(null);
+    dirPickerResolve = resolve;
+    $('dirTitle').textContent = title || 'Choose save folder';
+    $('dirWarning').textContent = '';
+    $('dirNewRow').hidden = true;
+    $('dirNewName').value = '';
+    $('dirInfo').textContent = '';
+    $('dirList').innerHTML = '<div class="dir-empty">Loading…</div>';
+    const dlg = $('dirPicker');
+    if (!dlg.open) dlg.showModal();
+    loadDir(start || '/');
+  });
+}
+
+async function loadDir(path) {
+  try {
+    const res = await fetch('api/browse?path=' + encodeURIComponent(path));
+    if (!res.ok) throw new Error(await apiError(res));
+    const data = await res.json();
+    currentDir = data.path;
+    $('dirPath').textContent = data.path;
+    $('dirInfo').textContent = data.writable ? 'Files will be saved here' : 'This folder is not writable';
+    const list = $('dirList');
+    list.innerHTML = '';
+    const addRow = (label, target) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'dir-item';
+      btn.innerHTML = `<span class="dir-icon">${ICONS.folder}</span><span>${esc(label)}</span>`;
+      btn.addEventListener('click', () => {
+        $('dirNewRow').hidden = true;
+        loadDir(target);
+      });
+      list.appendChild(btn);
+    };
+    if (data.parent) addRow('..', data.parent);
+    (data.dirs || []).forEach(d => addRow(d.name, d.path));
+    if (!data.parent && (!data.dirs || !data.dirs.length)) {
+      list.innerHTML = '<div class="dir-empty">No subfolders</div>';
+    }
+  } catch (e) {
+    $('dirWarning').textContent = 'Cannot open folder: ' + e.message;
+  }
+}
+
+function closeDirPicker(value) {
+  $('dirPicker').close();
+  if (value) lastDir = value;
+  const resolve = dirPickerResolve;
+  dirPickerResolve = null;
+  if (resolve) resolve(value);
+}
+
+$('dirSelect').addEventListener('click', () => closeDirPicker(currentDir));
+$('dirNewBtn').addEventListener('click', () => {
+  $('dirNewRow').hidden = false;
+  $('dirNewName').focus();
+});
+$('dirNewCreate').addEventListener('click', createDir);
+$('dirNewName').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); createDir(); }
+});
+
+async function createDir() {
+  const name = $('dirNewName').value.trim();
+  if (!name) return;
+  const btn = $('dirNewCreate');
+  btn.disabled = true;
+  try {
+    const res = await fetch('api/mkdir', { method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ parent: currentDir, name }) });
+    if (!res.ok) throw new Error(await apiError(res));
+    const data = await res.json();
+    $('dirNewRow').hidden = true;
+    $('dirNewName').value = '';
+    $('dirWarning').textContent = '';
+    await loadDir(data.path);
+  } catch (e) {
+    $('dirWarning').textContent = 'Create folder failed: ' + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+$('dirClose').addEventListener('click', () => closeDirPicker(null));
+$('dirPicker').addEventListener('click', (e) => {
+  if (e.target === $('dirPicker')) closeDirPicker(null);
+});
+
+$('importBtn').addEventListener('click', async () => {
+  const dir = await pickDirectory(lastDir, 'Choose compose folder');
+  if (!dir) return;
+  const btn = $('importBtn');
+  btn.disabled = true;
+  try {
+    const res = await fetch('api/import', { method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ dir }) });
+    if (!res.ok) throw new Error(await apiError(res));
+    const data = await res.json();
+    const files = data.files || [];
+    const warnings = data.warnings || [];
+    $('scanError').textContent = warnings.join(' · ');
+    toast((files.length === 1 ? 'Imported ' + files[0] : 'Imported ' + files.length + ' compose files')
+      + (warnings.length ? ' (with warnings)' : ''));
+    await load();
+  } catch (e) {
+    toast('Import failed: ' + e.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+async function openConvert(p) {
+  try {
+    const res = await fetch('api/convert?project=' + encodeURIComponent(p.project || ''));
+    if (!res.ok) throw new Error(await apiError(res));
+    const data = await res.json();
+    editorFile = null;
+    editorProject = p.project || '';
+    $('editorPath').textContent = (data.suggestedDir || '/tmp/converted/' + p.project) + '/compose.yaml';
+    $('editorText').value = data.content || '';
+    $('editorText').readOnly = false;
+    $('editorSave').disabled = false;
+    $('editorInfo').textContent = 'Convert: edit then save to a chosen directory.';
+    $('editorWarning').textContent = (data.warnings || []).map(w => '• ' + w).join('\n');
+    $('editor').showModal();
+    // store suggested dir on save button
+    $('editorSave').dataset.dir = data.suggestedDir || '/tmp/converted/' + p.project;
+  } catch (e) { toast('Error: ' + e.message); }
+}
 $('editorClose').addEventListener('click', () => $('editor').close());
 $('editorSave').addEventListener('click', saveEditor);
 $('editor').addEventListener('click', (e) => {

@@ -35,6 +35,13 @@ type Config struct {
 	// successfully (RFC3339). It is stored in the config file so the web UI can
 	// still show it after the updater restarts or updates itself.
 	LastUpdates map[string]string `json:"last_updates,omitempty"`
+	// ImportedProjects lists compose files that were added explicitly through
+	// the UI (or saved by the convert flow) even when no container exists yet.
+	// They are shown as stopped projects until started.
+	ImportedProjects []string `json:"imported_projects,omitempty"`
+	// HiddenProjects lists stopped projects removed from the UI list. Nothing
+	// on disk or in Docker is deleted; a project reappears once it is running.
+	HiddenProjects []string `json:"hidden_projects,omitempty"`
 
 	mu   sync.Mutex
 	path string
@@ -124,15 +131,98 @@ func (c *Config) snapshot() *Config {
 		lastUpdates[k] = v
 	}
 	cp := &Config{
-		CronSchedule:    c.CronSchedule,
-		Timezone:        c.Timezone,
-		RunOnStart:      c.RunOnStart,
-		AutoUpdate:      c.AutoUpdate,
-		CommandTimeout:  c.CommandTimeout,
-		EnabledProjects: enabled,
-		LastUpdates:     lastUpdates,
+		CronSchedule:     c.CronSchedule,
+		Timezone:         c.Timezone,
+		RunOnStart:       c.RunOnStart,
+		AutoUpdate:       c.AutoUpdate,
+		CommandTimeout:   c.CommandTimeout,
+		EnabledProjects:  enabled,
+		LastUpdates:      lastUpdates,
+		ImportedProjects: append([]string(nil), c.ImportedProjects...),
+		HiddenProjects:   append([]string(nil), c.HiddenProjects...),
 	}
 	return cp
+}
+
+// ImportedFiles returns the explicitly imported compose-file paths.
+func (c *Config) ImportedFiles() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.ImportedProjects...)
+}
+
+// AddImportedProject records a compose file so it is listed even when it has
+// no containers yet, and persists the change.
+func (c *Config) AddImportedProject(file string) error {
+	file = strings.TrimSpace(file)
+	if file == "" {
+		return nil
+	}
+	c.mu.Lock()
+	for _, f := range c.ImportedProjects {
+		if f == file {
+			c.mu.Unlock()
+			return nil
+		}
+	}
+	c.ImportedProjects = append(c.ImportedProjects, file)
+	// Importing a file again makes a previously hidden project visible.
+	hidden := c.HiddenProjects[:0]
+	for _, k := range c.HiddenProjects {
+		if k != file {
+			hidden = append(hidden, k)
+		}
+	}
+	c.HiddenProjects = hidden
+	c.mu.Unlock()
+	return c.save()
+}
+
+// HiddenProjectKeys returns the keys of stopped projects removed from the list.
+func (c *Config) HiddenProjectKeys() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.HiddenProjects...)
+}
+
+// AddHiddenProject removes a stopped project from the UI list without touching
+// its containers or files, and persists the change.
+func (c *Config) AddHiddenProject(key string) error {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return nil
+	}
+	c.mu.Lock()
+	for _, k := range c.HiddenProjects {
+		if k == key {
+			c.mu.Unlock()
+			return nil
+		}
+	}
+	c.HiddenProjects = append(c.HiddenProjects, key)
+	c.mu.Unlock()
+	return c.save()
+}
+
+// RemoveImportedProject drops a compose file from the imported list (without
+// touching the file on disk) and persists the change.
+func (c *Config) RemoveImportedProject(file string) error {
+	c.mu.Lock()
+	kept := c.ImportedProjects[:0]
+	changed := false
+	for _, f := range c.ImportedProjects {
+		if f == file {
+			changed = true
+			continue
+		}
+		kept = append(kept, f)
+	}
+	c.ImportedProjects = kept
+	c.mu.Unlock()
+	if !changed {
+		return nil
+	}
+	return c.save()
 }
 
 // ProjectEnabled reports whether a compose file participates in scheduled

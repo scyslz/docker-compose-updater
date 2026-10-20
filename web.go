@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -248,6 +249,322 @@ func startWeb(u *updater, addr string) {
 		}
 	})
 
+	// List directories for the folder picker used when saving a converted
+	// compose file. Only directories are returned, never file contents.
+	mux.HandleFunc("/api/browse", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		p := strings.TrimSpace(r.URL.Query().Get("path"))
+		if p == "" {
+			p = "/"
+		}
+		if !filepath.IsAbs(p) {
+			p = "/" + p
+		}
+		p = filepath.Clean(p)
+		// If the requested path does not exist yet (e.g. the suggested
+		// converted-project folder), start at its nearest existing ancestor.
+		for {
+			if info, err := os.Stat(p); err == nil && info.IsDir() {
+				break
+			}
+			parent := filepath.Dir(p)
+			if parent == p {
+				p = "/"
+				break
+			}
+			p = parent
+		}
+		entries, err := os.ReadDir(p)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		type dirEntry struct {
+			Name string `json:"name"`
+			Path string `json:"path"`
+		}
+		dirs := make([]dirEntry, 0, len(entries))
+		for _, e := range entries {
+			full := filepath.Join(p, e.Name())
+			info, err := os.Stat(full)
+			if err != nil || !info.IsDir() {
+				continue
+			}
+			dirs = append(dirs, dirEntry{Name: e.Name(), Path: full})
+			if len(dirs) >= 500 {
+				break
+			}
+		}
+		sort.Slice(dirs, func(i, j int) bool { return dirs[i].Name < dirs[j].Name })
+		parent := filepath.Dir(p)
+		if p == "/" {
+			parent = ""
+		}
+		writable := false
+		if info, err := os.Stat(p); err == nil {
+			writable = info.Mode().Perm()&0200 != 0
+		}
+		writeJSON(w, map[string]any{
+			"path":     p,
+			"parent":   parent,
+			"dirs":     dirs,
+			"writable": writable,
+		})
+	})
+
+	// Create a folder from the directory picker.
+	mux.HandleFunc("/api/mkdir", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var body struct {
+			Parent string `json:"parent"`
+			Name   string `json:"name"`
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		parent := strings.TrimSpace(body.Parent)
+		name := strings.TrimSpace(body.Name)
+		if parent == "" || !filepath.IsAbs(parent) {
+			http.Error(w, "parent must be an absolute path", http.StatusBadRequest)
+			return
+		}
+		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
+			http.Error(w, "invalid folder name", http.StatusBadRequest)
+			return
+		}
+		path := filepath.Join(parent, name)
+		if err := os.Mkdir(path, 0755); err != nil {
+			if errors.Is(err, os.ErrExist) {
+				http.Error(w, "folder already exists", http.StatusConflict)
+				return
+			}
+			http.Error(w, "create failed: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, map[string]any{"path": path})
+	})
+
+	// Import a compose file (or the folder containing it) so it is listed even
+	// before it has been started. The file must be visible inside the container.
+	mux.HandleFunc("/api/import", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var body struct {
+			Dir string `json:"dir"`
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		file, err := findComposeFiles(body.Dir, 3)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if len(file) == 0 {
+			http.Error(w, "no compose file found in that folder or within 3 subfolder levels", http.StatusBadRequest)
+			return
+		}
+		imported := make([]string, 0, len(file))
+		warnings := []string{}
+		for i, f := range file {
+			if err := u.cfg.AddImportedProject(f); err != nil {
+				warnings = append(warnings, "import "+f+" failed: "+err.Error())
+				continue
+			}
+			imported = append(imported, f)
+			// Validate the first few files only, so importing a large tree
+			// stays fast.
+			if i < 20 {
+				if msg := u.validateComposeFile(r.Context(), filepath.Dir(f), f); msg != "" {
+					warnings = append(warnings, f+": "+msg)
+				}
+			}
+		}
+		if len(imported) == 0 {
+			http.Error(w, "could not import any compose files", http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, map[string]any{
+			"status":   "imported",
+			"files":    imported,
+			"warnings": warnings,
+		})
+	})
+
+	// Remove an imported compose file from the list. The file itself is left
+	// untouched; running projects must be stopped and are not removable.
+	mux.HandleFunc("/api/unimport", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var body struct {
+			File    string `json:"file"`
+			Project string `json:"project"`
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		p, err := u.projectByFile(r.Context(), body.File, body.Project)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		if !p.Imported || p.Running {
+			http.Error(w, "only imported projects without running containers can be removed", http.StatusBadRequest)
+			return
+		}
+		if err := u.cfg.RemoveImportedProject(p.File); err != nil {
+			http.Error(w, "remove failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, map[string]any{"status": "removed", "file": p.File})
+	})
+
+	// Delete a stopped project: remove its stopped containers (compose down for
+	// Compose projects, docker rm for standalone containers). Running projects
+	// are refused. Volumes and compose files are kept.
+	mux.HandleFunc("/api/delete", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var body struct {
+			File    string `json:"file"`
+			Project string `json:"project"`
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		var p composeProject
+		var err error
+		if strings.HasPrefix(body.File, standaloneFilePrefix) {
+			p, err = u.standaloneContainer(r.Context(), strings.TrimPrefix(body.File, standaloneFilePrefix))
+		} else {
+			p, err = u.projectByFile(r.Context(), body.File, body.Project)
+		}
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		if p.Running {
+			http.Error(w, "stop the project before removing it", http.StatusBadRequest)
+			return
+		}
+		// Removing only hides the entry from the list. Containers, volumes and
+		// files on disk are never deleted.
+		detail := "removed from list (containers and files kept)"
+		if p.Imported && p.Total == 0 {
+			if err := u.cfg.RemoveImportedProject(p.File); err != nil {
+				http.Error(w, "remove failed: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+		} else {
+			key := p.File
+			if key == "" {
+				key = p.Project
+			}
+			if err := u.cfg.AddHiddenProject(key); err != nil {
+				http.Error(w, "remove failed: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			// Drop an import entry too, so the stopped project does not
+			// reappear from the imported list.
+			if err := u.cfg.RemoveImportedProject(p.File); err != nil {
+				log.Printf("cannot remove import entry for %s: %v", p.File, err)
+			}
+		}
+		writeJSON(w, map[string]any{"status": "removed", "file": p.File, "detail": detail})
+	})
+
+	// Convert a standalone container to compose: return generated compose.yaml content.
+	mux.HandleFunc("/api/convert", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		name := strings.TrimSpace(r.URL.Query().Get("project"))
+		if name == "" {
+			http.Error(w, "project required", http.StatusBadRequest)
+			return
+		}
+		// Only containers discovered as standalone can be converted; this keeps
+		// the unauthenticated endpoint from inspecting arbitrary containers.
+		if _, err := u.standaloneContainer(r.Context(), name); err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		content, warnings, err := generateComposeFromContainer(r.Context(), u, name)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		writeJSON(w, map[string]any{
+			"project":      name,
+			"content":      content,
+			"warnings":     warnings,
+			"suggestedDir": u.suggestedConvertDir(r.Context()),
+		})
+	})
+
+	// Save compose.yaml to a new directory (for converted projects).
+	mux.HandleFunc("/api/compose/save-new", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, maxComposeBytes+64*1024)
+		var body struct {
+			Dir     string `json:"dir"`
+			Content string `json:"content"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if strings.TrimSpace(body.Dir) == "" {
+			http.Error(w, "dir required", http.StatusBadRequest)
+			return
+		}
+		if !filepath.IsAbs(body.Dir) {
+			http.Error(w, "dir must be an absolute path", http.StatusBadRequest)
+			return
+		}
+		if err := os.MkdirAll(body.Dir, 0755); err != nil {
+			http.Error(w, "mkdir failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		path := body.Dir + "/compose.yaml"
+		if err := os.WriteFile(path, []byte(body.Content), 0644); err != nil {
+			http.Error(w, "save failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		// Validate the generated file so a bad edit is reported while the
+		// editor is still open. The file is kept either way. Importing it makes
+		// the new project appear in the list as stopped, ready to start.
+		warning := u.validateComposeFile(r.Context(), body.Dir, path)
+		if err := u.cfg.AddImportedProject(path); err != nil {
+			warning = strings.TrimSpace(warning + " import failed: " + err.Error())
+		}
+		writeJSON(w, map[string]any{"status": "saved", "file": path, "warning": warning})
+	})
+
 	// Start, stop, or restart a known project.
 	mux.HandleFunc("/api/action", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -269,13 +586,29 @@ func startWeb(u *updater, addr string) {
 			http.Error(w, "unsupported action", http.StatusBadRequest)
 			return
 		}
-		p, err := u.projectByFile(r.Context(), body.File, body.Project)
+		var p composeProject
+		var err error
+		if strings.HasPrefix(body.File, standaloneFilePrefix) {
+			name := strings.TrimPrefix(body.File, standaloneFilePrefix)
+			if body.Project != "" && body.Project != name {
+				http.Error(w, "project does not match the container", http.StatusBadRequest)
+				return
+			}
+			p, err = u.standaloneContainer(r.Context(), name)
+		} else {
+			p, err = u.projectByFile(r.Context(), body.File, body.Project)
+		}
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		}
-		if !p.Mounted {
-			http.Error(w, "compose file is not readable inside the container; mount its directory to enable this action", http.StatusBadRequest)
+		if p.Compose {
+			if !p.Mounted {
+				http.Error(w, "compose file is not readable inside the container; mount its directory to enable this action", http.StatusBadRequest)
+				return
+			}
+		} else if action == "recreate" {
+			http.Error(w, "recreate needs a Compose project; convert this container first", http.StatusBadRequest)
 			return
 		}
 		if p.Self && action != "start" {
@@ -356,7 +689,7 @@ func (u *updater) isBusy(file string) bool {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	for i := range u.logs {
-		if u.logs[i].File == file && u.logs[i].Status == "running" {
+		if u.logs[i].File == file && u.logs[i].Status == "processing" {
 			return true
 		}
 	}
@@ -394,7 +727,28 @@ func (u *updater) runAction(p composeProject, action string) {
 		log.Printf("[manual] %s: unsupported action %q", p.Key(), action)
 		return
 	}
-	argv := u.compose.withProjectFile(p.Project, p.File, sub, extra...)
+	var argv []string
+	if p.Compose {
+		if action == "start" && p.Total == 0 {
+			// Imported project that has never been created: `compose start`
+			// fails because there is no container yet, so bring it up instead.
+			args := []string{"-d", "--no-build"}
+			if u.compose.supports {
+				args = append(args, "--wait")
+			}
+			argv = u.compose.withProjectFile(p.Project, p.File, "up", args...)
+		} else {
+			argv = u.compose.withProjectFile(p.Project, p.File, sub, extra...)
+		}
+	} else if sub == "start" || sub == "stop" || sub == "restart" {
+		// Standalone containers have no compose file: use the Docker CLI
+		// directly. dir stays empty because there is no project directory.
+		dir = ""
+		argv = []string{"docker", sub, p.Project}
+	} else {
+		log.Printf("[manual] %s: action %q is not available for standalone containers", p.Key(), action)
+		return
+	}
 	out, err := u.runCmdStream(ctx, dir, argv, func(line string) {
 		u.progressLog(p.Key(), line)
 	})
@@ -488,6 +842,145 @@ func writeComposeFile(path, content string) (string, error) {
 	return backup, nil
 }
 
+// findComposeFiles returns compose files in root and up to maxDepth levels of
+// subdirectories below it. One file per directory is returned, preferring the
+// conventional names. Hidden directories are skipped.
+func findComposeFiles(root string, maxDepth int) ([]string, error) {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return nil, errors.New("folder required")
+	}
+	if !filepath.IsAbs(root) {
+		return nil, errors.New("path must be absolute")
+	}
+	root = filepath.Clean(root)
+	info, err := os.Stat(root)
+	if err != nil {
+		return nil, err
+	}
+	names := []string{"compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"}
+	if info.Mode().IsRegular() {
+		base := strings.ToLower(filepath.Base(root))
+		for _, n := range names {
+			if base == n {
+				return []string{root}, nil
+			}
+		}
+		return nil, errors.New("not a recognized compose file name")
+	}
+	if !info.IsDir() {
+		return nil, errors.New("not a file or folder")
+	}
+
+	const maxFiles = 100
+	var found []string
+	var walk func(dir string, depth int)
+	walk = func(dir string, depth int) {
+		if len(found) >= maxFiles {
+			return
+		}
+		for _, n := range names {
+			full := filepath.Join(dir, n)
+			if fi, err := os.Stat(full); err == nil && fi.Mode().IsRegular() {
+				found = append(found, full)
+				break
+			}
+		}
+		if depth >= maxDepth {
+			return
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return
+		}
+		sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+		for _, e := range entries {
+			if len(found) >= maxFiles {
+				return
+			}
+			if strings.HasPrefix(e.Name(), ".") {
+				continue
+			}
+			full := filepath.Join(dir, e.Name())
+			fi, err := os.Stat(full)
+			if err != nil || !fi.IsDir() {
+				continue
+			}
+			walk(full, depth+1)
+		}
+	}
+	walk(root, 0)
+	sort.Strings(found)
+	return found, nil
+}
+
+// resolveComposeFile accepts a compose file or a directory containing one of the
+// conventional compose file names.
+func resolveComposeFile(p string) (string, error) {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return "", errors.New("folder required")
+	}
+	if !filepath.IsAbs(p) {
+		return "", errors.New("path must be absolute")
+	}
+	p = filepath.Clean(p)
+	info, err := os.Stat(p)
+	if err != nil {
+		return "", err
+	}
+	names := []string{"compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"}
+	if info.Mode().IsRegular() {
+		base := strings.ToLower(filepath.Base(p))
+		for _, n := range names {
+			if base == n {
+				return p, nil
+			}
+		}
+		return "", errors.New("not a recognized compose file name")
+	}
+	if !info.IsDir() {
+		return "", errors.New("not a file or folder")
+	}
+	for _, n := range names {
+		full := filepath.Join(p, n)
+		if fi, err := os.Stat(full); err == nil && fi.Mode().IsRegular() {
+			return full, nil
+		}
+	}
+	return "", errors.New("no compose file in folder (expected compose.yaml, compose.yml, docker-compose.yaml, or docker-compose.yml)")
+}
+
+// suggestedConvertDir picks a starting folder for the convert save flow: the
+// most common parent of mounted Compose projects, so the picker opens where
+// the user's stacks actually live. Falls back to /tmp/converted.
+func (u *updater) suggestedConvertDir(ctx context.Context) string {
+	projects, err := u.discoverRunningProjects(ctx)
+	if err == nil {
+		counts := map[string]int{}
+		for _, p := range projects {
+			if !p.Compose || p.Self || p.WorkingDir == "" {
+				continue
+			}
+			dir := filepath.Dir(p.WorkingDir)
+			if dir == "/" || strings.HasPrefix(dir, "/tmp") {
+				continue
+			}
+			counts[dir]++
+		}
+		best, bestCount := "", 0
+		for dir, n := range counts {
+			if n > bestCount || (n == bestCount && dir < best) {
+				best, bestCount = dir, n
+			}
+		}
+		if best != "" {
+			return best
+		}
+	}
+	return "/tmp/converted"
+}
+
 // validateCompose runs `compose config` after a save and returns a warning (not
 // an error) when the edited file no longer parses. The save is still kept so
 // the user can fix it in place; the previous version remains in the backup.
@@ -499,6 +992,17 @@ func (u *updater) validateCompose(ctx context.Context, p composeProject) string 
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	if _, err := u.runCmd(ctx, dir, u.compose.withProjectFile(p.Project, p.File, "config", "--quiet")); err != nil {
+		return "compose validation failed: " + err.Error()
+	}
+	return ""
+}
+
+// validateComposeFile checks a compose file that is not a known project yet,
+// such as a freshly converted standalone container.
+func (u *updater) validateComposeFile(ctx context.Context, dir, file string) string {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	if _, err := u.runCmd(ctx, dir, u.compose.withFile(file, "config", "--quiet")); err != nil {
 		return "compose validation failed: " + err.Error()
 	}
 	return ""
@@ -546,13 +1050,13 @@ func (u *updater) startLogDetail(p composeProject, trigger, detail string) (time
 		Trigger: trigger,
 		Project: p.Project,
 		File:    p.File,
-		Status:  "running",
+		Status:  "processing",
 		Detail:  detail,
 	}
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	for i := range u.logs {
-		if u.logs[i].File == p.File && u.logs[i].Status == "running" {
+		if u.logs[i].File == p.File && u.logs[i].Status == "processing" {
 			log.Printf("[%s] %s already being checked; ignoring duplicate trigger", trigger, p.Project)
 			return time.Time{}, false
 		}
@@ -568,7 +1072,7 @@ func (u *updater) startLogDetail(p composeProject, trigger, detail string) (time
 	running := projectResult{
 		File:      p.File,
 		Project:   p.Project,
-		Status:    "running",
+		Status:    "processing",
 		Detail:    detail,
 		When:      now.Format(time.RFC3339),
 		UpdatedAt: u.cfg.LastUpdate(p.File),
@@ -598,7 +1102,7 @@ func (u *updater) progressLog(key, line string) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	for i := range u.logs {
-		if u.logs[i].File == key && u.logs[i].Status == "running" {
+		if u.logs[i].File == key && u.logs[i].Status == "processing" {
 			cur := u.logs[i].Detail
 			if cur == "" || cur == "checking…" {
 				u.logs[i].Detail = line
@@ -628,7 +1132,7 @@ func (u *updater) finishLog(res projectResult) {
 	u.mu.Lock()
 	replaced := false
 	for i := range u.logs {
-		if u.logs[i].File == res.File && u.logs[i].Status == "running" {
+		if u.logs[i].File == res.File && u.logs[i].Status == "processing" {
 			u.logs[i] = entry
 			replaced = true
 			break

@@ -1,10 +1,10 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -457,6 +457,12 @@ func (u *updater) dropTask(key string) context.CancelFunc {
 	return nil
 }
 
+// pullIdleTimeout aborts a pull that produces no output at all for this long.
+// Registry downloads normally emit progress several times a second, so a long
+// silence means the connection is dead (often a stuck proxy); the update then
+// fails or retries directly instead of hanging until the command timeout.
+const pullIdleTimeout = 2 * time.Minute
+
 // maxParallelProjects caps how many projects are pulled/updated at the same
 // time during a scheduled scan. Each project's `compose pull` already pulls its
 // images concurrently; this cap bounds the number of independent Compose
@@ -790,7 +796,7 @@ func (u *updater) runDocker(parent context.Context, dir string, args []string) (
 func (u *updater) pullProjectImages(ctx context.Context, p composeProject, dir string, images []string) error {
 	progress := func(line string) { u.progressLog(p.Key(), "pulling: "+line) }
 	composePull := func() error {
-		_, err := u.runCmdStream(ctx, dir, u.compose.withProjectFile(p.Project, p.File, "pull"), progress)
+		_, err := u.runCmdStreamIdle(ctx, dir, u.compose.withProjectFile(p.Project, p.File, "pull"), pullIdleTimeout, progress)
 		return err
 	}
 
@@ -805,18 +811,18 @@ func (u *updater) pullProjectImages(ctx context.Context, p composeProject, dir s
 		proxied := proxiedImageRef(proxy, image)
 		if proxied == image {
 			// Not proxyable (digest-pinned or already accelerated).
-			if _, err := u.runCmdStream(ctx, dir, []string{"docker", "pull", image}, progress); err != nil {
+			if _, err := u.runCmdStreamIdle(ctx, dir, []string{"docker", "pull", image}, pullIdleTimeout, progress); err != nil {
 				return err
 			}
 			continue
 		}
 		u.progressLog(p.Key(), "pulling via proxy: "+proxied)
-		if _, err := u.runCmdStream(ctx, dir, []string{"docker", "pull", proxied}, progress); err != nil {
+		if _, err := u.runCmdStreamIdle(ctx, dir, []string{"docker", "pull", proxied}, pullIdleTimeout, progress); err != nil {
 			if ctx.Err() != nil {
 				return err
 			}
 			u.progressLog(p.Key(), "proxy pull failed, retrying directly: "+image)
-			if _, err := u.runCmdStream(ctx, dir, []string{"docker", "pull", image}, progress); err != nil {
+			if _, err := u.runCmdStreamIdle(ctx, dir, []string{"docker", "pull", image}, pullIdleTimeout, progress); err != nil {
 				return err
 			}
 			continue
@@ -863,6 +869,9 @@ func (u *updater) runCmd(parent context.Context, dir string, argv []string) ([]b
 	defer cancel()
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = dir
+	// Do not let a leftover child process (which inherited the output pipe)
+	// delay cancellation until it exits on its own.
+	cmd.WaitDelay = time.Second
 	// Keep stdout and stderr separate so diagnostics printed on stderr (e.g.
 	// Compose's "version is obsolete" warning) do not corrupt parsed stdout
 	// such as `compose config --format json`.
@@ -884,13 +893,17 @@ func (u *updater) runCmd(parent context.Context, dir string, argv []string) ([]b
 }
 
 // runCmdStream is like runCmd but reports progress: onProgress is called with
-// the latest non-empty line of combined output (throttled) as the command runs.
-// The full output is still returned for callers that parse it.
+// every output line as it arrives. Lines are split on both newlines and
+// carriage returns, because Docker reports pull progress by rewriting one line
+// with \r: waiting for a newline would hide all progress until a layer
+// finishes and make an active pull look frozen. The full output is still
+// returned for callers that parse it.
 func (u *updater) runCmdStream(parent context.Context, dir string, argv []string, onProgress func(string)) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(parent, u.timeout())
 	defer cancel()
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = dir
+	cmd.WaitDelay = time.Second
 	pr, pw := io.Pipe()
 	cmd.Stdout = pw
 	cmd.Stderr = pw
@@ -900,25 +913,42 @@ func (u *updater) runCmdStream(parent context.Context, dir string, argv []string
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		r := bufio.NewReaderSize(pr, 64*1024)
+		buf := make([]byte, 32*1024)
+		var line []byte
+		emit := func() {
+			if len(line) == 0 {
+				return
+			}
+			seg := strings.TrimSpace(stripANSI(string(line)))
+			line = line[:0]
+			if seg == "" {
+				return
+			}
+			mu.Lock()
+			full.WriteString(seg)
+			full.WriteByte('\n')
+			mu.Unlock()
+			if onProgress != nil {
+				onProgress(seg)
+			}
+		}
 		for {
-			chunk, err := r.ReadString('\n')
-			// Also split on carriage returns, which docker progress uses to
-			// redraw the same line in place.
-			for _, seg := range strings.FieldsFunc(chunk, func(c rune) bool { return c == '\r' }) {
-				seg = strings.TrimSpace(stripANSI(seg))
-				if seg == "" {
+			n, err := pr.Read(buf)
+			chunk := buf[:n]
+			for i := 0; i < len(chunk); i++ {
+				b := chunk[i]
+				if b == '\r' || b == '\n' {
+					emit()
 					continue
 				}
-				mu.Lock()
-				full.WriteString(seg)
-				full.WriteByte('\n')
-				mu.Unlock()
-				if onProgress != nil {
-					onProgress(seg)
+				line = append(line, b)
+				// Bound a single runaway line so it cannot grow without limit.
+				if len(line) >= 64*1024 {
+					emit()
 				}
 			}
 			if err != nil {
+				emit()
 				return
 			}
 		}
@@ -926,7 +956,18 @@ func (u *updater) runCmdStream(parent context.Context, dir string, argv []string
 
 	err := cmd.Run()
 	_ = pw.Close()
-	<-done
+	// A cancelled command may leave a child process (for example a shell's
+	// sleep) holding the write end of the pipe; stop reading immediately so
+	// cancellation is not delayed until that child exits.
+	if ctx.Err() != nil {
+		_ = pr.Close()
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		_ = pr.Close()
+		<-done
+	}
 	mu.Lock()
 	out := append([]byte(nil), full.Bytes()...)
 	mu.Unlock()
@@ -937,6 +978,31 @@ func (u *updater) runCmdStream(parent context.Context, dir string, argv []string
 		return out, fmt.Errorf("%s: %w: %s", strings.Join(argv, " "), err, strings.TrimSpace(string(out)))
 	}
 	return out, nil
+}
+
+// errNoProgress marks a command that produced no output for too long. It is
+// used to abort a stalled image pull (for example a hung proxy connection) and
+// fall back to a direct pull.
+var errNoProgress = errors.New("no output")
+
+// runCmdStreamIdle is runCmdStream with an inactivity watchdog: the command is
+// cancelled when it has not produced a line for idle. Progress that keeps
+// arriving (which live pull progress does) resets the timer.
+func (u *updater) runCmdStreamIdle(parent context.Context, dir string, argv []string, idle time.Duration, onProgress func(string)) ([]byte, error) {
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+	timer := time.AfterFunc(idle, cancel)
+	defer timer.Stop()
+	out, err := u.runCmdStream(ctx, dir, argv, func(line string) {
+		timer.Reset(idle)
+		if onProgress != nil {
+			onProgress(line)
+		}
+	})
+	if err != nil && parent.Err() == nil && ctx.Err() != nil {
+		return out, fmt.Errorf("%w for %s", errNoProgress, idle)
+	}
+	return out, err
 }
 
 // stripANSI removes common ANSI escape sequences (color/progress control) so

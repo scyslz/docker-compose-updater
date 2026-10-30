@@ -78,9 +78,11 @@ func splitImageRegistry(image string) (registry, rest string) {
 // given proxy prefix. References Docker cannot re-tag (digest-pinned images) or
 // images that already use the proxy are returned unchanged.
 func proxiedImageRef(proxy, image string) string {
-	proxy = strings.TrimRight(strings.TrimSpace(proxy), "/")
+	// Docker image references never carry a URL scheme, so use the host+path
+	// form of the proxy (gh-proxy.com/docker), not the full URL.
+	prefix := proxyHostPath(strings.TrimSpace(proxy))
 	image = strings.TrimSpace(image)
-	if proxy == "" || image == "" {
+	if prefix == "" || image == "" {
 		return image
 	}
 	// A digest reference cannot be re-tagged under its original name, so it is
@@ -88,7 +90,7 @@ func proxiedImageRef(proxy, image string) string {
 	if strings.Contains(image, "@") {
 		return image
 	}
-	if hp := proxyHostPath(proxy); hp != "" && strings.HasPrefix(image, hp+"/") {
+	if strings.HasPrefix(image, prefix+"/") {
 		return image
 	}
 	registry, rest := splitImageRegistry(image)
@@ -97,11 +99,11 @@ func proxiedImageRef(proxy, image string) string {
 		// Official images live in the implicit "library" namespace; the public
 		// prefixes expect "nginx:alpine" rather than "library/nginx:alpine".
 		rest = strings.TrimPrefix(rest, "library/")
-		return proxy + "/" + rest
+		return prefix + "/" + rest
 	default:
 		// Other registries keep their host in the proxy path, e.g.
-		// https://gh-proxy.com/docker/ghcr.io/owner/app:tag.
-		return proxy + "/" + image
+		// gh-proxy.com/docker/ghcr.io/owner/app:tag.
+		return prefix + "/" + image
 	}
 }
 

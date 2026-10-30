@@ -43,18 +43,19 @@ func TestNormalizeProxyURL(t *testing.T) {
 
 func TestProxiedImageRef(t *testing.T) {
 	const proxy = "https://gh-proxy.com/docker"
+	const ref = "gh-proxy.com/docker" // image references have no URL scheme
 	tests := []struct {
 		image string
 		want  string
 	}{
-		{"nginx:latest", proxy + "/nginx:latest"},
-		{"nginx", proxy + "/nginx"},
-		{"library/redis:7", proxy + "/redis:7"},
-		{"docker.io/library/nginx:1.25", proxy + "/nginx:1.25"},
-		{"index.docker.io/library/alpine:3.20", proxy + "/alpine:3.20"},
-		{"adguard/adguardhome:latest", proxy + "/adguard/adguardhome:latest"},
-		{"ghcr.io/owner/app:v1", proxy + "/ghcr.io/owner/app:v1"},
-		{"quay.io/calico/cni:v3", proxy + "/quay.io/calico/cni:v3"},
+		{"nginx:latest", ref + "/nginx:latest"},
+		{"nginx", ref + "/nginx"},
+		{"library/redis:7", ref + "/redis:7"},
+		{"docker.io/library/nginx:1.25", ref + "/nginx:1.25"},
+		{"index.docker.io/library/alpine:3.20", ref + "/alpine:3.20"},
+		{"adguard/adguardhome:latest", ref + "/adguard/adguardhome:latest"},
+		{"ghcr.io/owner/app:v1", ref + "/ghcr.io/owner/app:v1"},
+		{"quay.io/calico/cni:v3", ref + "/quay.io/calico/cni:v3"},
 		// Digest-pinned images cannot be re-tagged and stay direct.
 		{"nginx@sha256:abc123", "nginx@sha256:abc123"},
 		// Already accelerated references are left alone.
@@ -68,7 +69,7 @@ func TestProxiedImageRef(t *testing.T) {
 	if got := proxiedImageRef("", "nginx:latest"); got != "nginx:latest" {
 		t.Errorf("empty proxy changed image to %q", got)
 	}
-	if got := proxiedImageRef(proxy+"/", "nginx:latest"); got != proxy+"/nginx:latest" {
+	if got := proxiedImageRef(proxy+"/", "nginx:latest"); got != ref+"/nginx:latest" {
 		t.Errorf("trailing slash proxy gave %q", got)
 	}
 }

@@ -4,6 +4,8 @@
   "run_on_start": true,
   "auto_update": true,
   "command_timeout": "30m",
+  "image_proxies": [],
+  "active_proxy": "",
   "enabled_projects": {},
   "imported_projects": [],
   "hidden_projects": []

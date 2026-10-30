@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -42,6 +43,13 @@ type Config struct {
 	// HiddenProjects lists stopped projects removed from the UI list. Nothing
 	// on disk or in Docker is deleted; a project reappears once it is running.
 	HiddenProjects []string `json:"hidden_projects,omitempty"`
+	// ImageProxies lists registry prefix proxies (e.g.
+	// https://gh-proxy.com/docker) available for image pulls. Any number may be
+	// configured, but only the one named by ActiveProxy is used.
+	ImageProxies []string `json:"image_proxies,omitempty"`
+	// ActiveProxy is the image proxy currently used for pulls, or "" for
+	// direct registry access. It always refers to an entry in ImageProxies.
+	ActiveProxy string `json:"active_proxy,omitempty"`
 
 	mu   sync.Mutex
 	path string
@@ -100,6 +108,26 @@ func (c *Config) normalize() {
 	if c.LastUpdates == nil {
 		c.LastUpdates = map[string]string{}
 	}
+	// Drop invalid or duplicate proxy entries from a hand-edited file and make
+	// sure the active proxy still exists.
+	proxies := make([]string, 0, len(c.ImageProxies))
+	seen := make(map[string]bool, len(c.ImageProxies))
+	for _, raw := range c.ImageProxies {
+		normalized, err := normalizeProxyURL(raw)
+		if err != nil || seen[normalized] {
+			continue
+		}
+		seen[normalized] = true
+		proxies = append(proxies, normalized)
+	}
+	c.ImageProxies = proxies
+	if c.ActiveProxy != "" {
+		if normalized, err := normalizeProxyURL(c.ActiveProxy); err == nil && seen[normalized] {
+			c.ActiveProxy = normalized
+		} else {
+			c.ActiveProxy = ""
+		}
+	}
 }
 
 // save writes the configuration back to its file atomically.
@@ -140,8 +168,123 @@ func (c *Config) snapshot() *Config {
 		LastUpdates:      lastUpdates,
 		ImportedProjects: append([]string(nil), c.ImportedProjects...),
 		HiddenProjects:   append([]string(nil), c.HiddenProjects...),
+		ImageProxies:     append([]string(nil), c.ImageProxies...),
+		ActiveProxy:      c.ActiveProxy,
 	}
 	return cp
+}
+
+// ImageProxyList returns the configured image proxy URLs.
+func (c *Config) ImageProxyList() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.ImageProxies...)
+}
+
+// ActiveImageProxy returns the image proxy used for pulls, or "" when pulls go
+// straight to the registries.
+func (c *Config) ActiveImageProxy() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.ActiveProxy
+}
+
+// AddImageProxy validates and stores a new image proxy. The first proxy added
+// becomes active automatically; existing entries are left untouched.
+func (c *Config) AddImageProxy(raw string) error {
+	proxy, err := normalizeProxyURL(raw)
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	exists := false
+	for _, p := range c.ImageProxies {
+		if p == proxy {
+			exists = true
+			break
+		}
+	}
+	changed := false
+	if !exists {
+		c.ImageProxies = append(c.ImageProxies, proxy)
+		changed = true
+	}
+	if c.ActiveProxy == "" {
+		c.ActiveProxy = proxy
+		changed = true
+	}
+	c.mu.Unlock()
+	if !changed {
+		return nil
+	}
+	return c.save()
+}
+
+// RemoveImageProxy deletes a proxy and clears the active selection when it was
+// the one in use.
+func (c *Config) RemoveImageProxy(raw string) error {
+	proxy, err := normalizeProxyURL(raw)
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	kept := c.ImageProxies[:0]
+	changed := false
+	for _, p := range c.ImageProxies {
+		if p == proxy {
+			changed = true
+			continue
+		}
+		kept = append(kept, p)
+	}
+	c.ImageProxies = kept
+	if c.ActiveProxy == proxy {
+		c.ActiveProxy = ""
+		changed = true
+	}
+	c.mu.Unlock()
+	if !changed {
+		return nil
+	}
+	return c.save()
+}
+
+// SetActiveImageProxy selects the proxy used for pulls. An empty value disables
+// proxying; any other value must be a configured proxy.
+func (c *Config) SetActiveImageProxy(raw string) error {
+	if strings.TrimSpace(raw) == "" {
+		c.mu.Lock()
+		changed := c.ActiveProxy != ""
+		c.ActiveProxy = ""
+		c.mu.Unlock()
+		if !changed {
+			return nil
+		}
+		return c.save()
+	}
+	proxy, err := normalizeProxyURL(raw)
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	known := false
+	for _, p := range c.ImageProxies {
+		if p == proxy {
+			known = true
+			break
+		}
+	}
+	if !known {
+		c.mu.Unlock()
+		return errors.New("unknown image proxy; add it first")
+	}
+	changed := c.ActiveProxy != proxy
+	c.ActiveProxy = proxy
+	c.mu.Unlock()
+	if !changed {
+		return nil
+	}
+	return c.save()
 }
 
 // ImportedFiles returns the explicitly imported compose-file paths.

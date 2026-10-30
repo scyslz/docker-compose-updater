@@ -63,13 +63,15 @@ The following settings are configured in the file / web UI (not via environment)
 The updater embeds a small web UI (default `http://<host>:8080`) for viewing and editing configuration without touching files by hand:
 
 - **Schedule**: edit `cron_schedule`, timezone, command timeout, and the `auto_update` / `run_on_start` toggles. Saving writes the config file and the scheduler picks up the new cron on its next cycle (no restart needed).
+- **Docker image proxy**: add one or more registry prefix proxies such as `https://gh-proxy.com/docker` and activate the one to use (or choose **Direct (no proxy)**). The first proxy added becomes active automatically. With a proxy active, each image of a project is pulled as `<proxy>/<image>` and re-tagged under the name the compose file expects, so `compose up` reuses the accelerated layers. Images that cannot be proxied (digest-pinned references, private registries that reject the proxy) fall back to a direct pull, and a failed proxied pull is retried directly. Proxies apply to image pulls during checks/updates; lifecycle actions and Compose builds are unchanged. Manage them through the UI; they are stored in `image_proxies` / `active_proxy` in the config file.
 - **Running projects**: every currently-running Compose project is listed (from Docker labels). Tick a project to include it in the **scheduled** update; use **Check & update** to update just that project immediately — even if it is not ticked.
 - **Edit compose**: view and edit a project's primary compose file in the browser. Saving writes the file atomically and keeps the previous version as `<file>.bak`. Editing requires the project directory to be mounted **read-write** (`:rw`); with the read-only (`:ro`) mount recommended above, the editor opens in read-only mode. After saving, the updater runs `compose config` and shows a warning if the file no longer parses (the backup is still available). Saving only writes the file; use **Check & update** afterwards to apply configuration/image changes to running services.
 - **Start / stop / restart / recreate**: lifecycle buttons for every discovered project. **Recreate** runs `compose up -d --force-recreate` (plus `--wait` when supported) to apply compose edits such as a changed image tag even when Compose considers the container current. Actions run asynchronously and appear in the check log. The updater refuses to stop, restart, or recreate its own project, since that would kill its own UI.
 - **Standalone containers**: containers that are not part of a Compose project are listed with a `standalone container` marker. Start, stop, and restart call the Docker CLI directly (`docker start|stop|restart <name>`); no compose file or mount is needed. **Convert to Compose** generates a `compose.yaml` from `docker inspect` (image, ports, volumes, environment, labels, networks, restart policy) for review in the editor. Because the original container keeps running, the generated service uses a new container name (`<name>-compose`) and new host ports, keeping the old name and mappings as comments so it can start alongside the original. Saving opens a folder picker that browses the directories visible inside the container (starting at your stacks' common parent). A **New folder** button creates a folder in place; **Select this folder** saves `compose.yaml` there and validates it with `compose config`.
 - **Import compose**: choose a folder (or file) containing a `compose.yaml`/`compose.yml`/`docker-compose.yml` to list it even when it has never been started. Folders are scanned recursively up to three subfolder levels, so selecting `/home/hq` finds stacks nested below it (hidden folders are skipped, up to 100 files per import). Imported projects appear as **imported** (stopped) and can be started with the usual lifecycle buttons; starting one with no containers runs `compose up -d`. If the derived project name is already used by another stack, a numeric suffix is added so `-p` cannot target the wrong project. Imports are stored in `imported_projects` in the config file. Files saved by the convert flow are imported automatically. **Stopped projects get a trash button that only removes them from the list** — no containers, volumes, or files are deleted. Imported entries are dropped from `imported_projects`; stopped Docker projects are recorded in `hidden_projects` and reappear automatically once they are started again. Running projects never show the button.
 - **Scan all now**: run a full scan over all selected projects.
-- Each project shows its last status: `updated`, `unchanged`, `skipped`, `unmounted`, `pulled`, or `failed`.
+- **Logs**: each check or lifecycle action appears in the log with its elapsed time. While an operation is `processing`, the project's action button that started it is replaced by an **X (cancel) icon button** (for a scheduled check, the check button). Like other destructive actions, the first click arms it in red and the second click stops the running `pull`/`up`/lifecycle command for that project without affecting other projects; while shutting down it shows a pulsing `…` icon. Cancelled entries are reported as `cancelled` (or `cancelling` while the command is shutting down); the log counter freezes at the final duration when it finishes.
+- Each project shows its last status: `updated`, `unchanged`, `skipped`, `unmounted`, `pulled`, `cancelled`, or `failed`.
 - A runtime badge next to the project name shows container state at a glance: green `running` (with `running/total` when a project has several containers), amber `partial`/`starting`/`restarting`, red `unhealthy`, grey `stopped`, and `imported` for files with no containers yet.
 - Each project also shows **Last check** (when it was last inspected) and **Last update** (the last successful `updated`/`pulled`/`started`/`recreated` action). Last-update times are stored in the config file, so they survive restarts and self-updates.
 
@@ -90,6 +92,10 @@ See `config.example.json` for the full shape:
   "run_on_start": true,
   "auto_update": true,
   "command_timeout": "30m",
+  "image_proxies": [
+    "https://gh-proxy.com/docker"
+  ],
+  "active_proxy": "https://gh-proxy.com/docker",
   "enabled_projects": {
     "/home/hq/docker-data/foo/docker-compose.yml": true
   }
@@ -98,11 +104,13 @@ See `config.example.json` for the full shape:
 
 `enabled_projects` maps an absolute compose file path (as reported by Docker) to `true` when it is selected for scheduled updates. Mount `./config` (or any host dir) to `/config` to persist it.
 
+`image_proxies` lists registry prefix proxies; `active_proxy` names the one used for pulls (empty means direct access — the example above shows one configured, while `config.example.json` ships with both empty). Both are normally managed from the **Docker image proxy** section of the UI. Only public prefix proxies are supported: images are pulled as `<active_proxy>/<image>` and re-tagged locally, so no Docker daemon registry-mirror configuration is needed.
+
 The updater also maintains a `last_updates` map (compose file path → RFC3339 timestamp) in the same file to power the **Last update** column. It is written automatically; you do not need to edit it.
 
 ### Check log retention
 
-The web UI keeps the most recent **100** check entries in memory (`maxCheckLogs` in `web.go`). Once that limit is exceeded, the oldest entry is dropped, so the log rotates automatically rather than growing without bound. Each entry's captured command output is capped at 20 KB. The log is **not** written to disk and is cleared when the container restarts; use `docker logs` for the process log. Last-update timestamps are separate from this ring buffer and persist in the config file.
+The web UI keeps the most recent **100** check entries in memory (`maxCheckLogs` in `web.go`). Once that limit is exceeded, the oldest entry is dropped, so the log rotates automatically rather than growing without bound. Each entry's captured command output is capped at 20 KB. Every entry records its duration (`duration_ms`); entries still running show a live counter based on their start time. A running entry can be cancelled from the project's action button that started it; the cancellation applies only to that project's operation. The log is **not** written to disk and is cleared when the container restarts; use `docker logs` for the process log. Last-update timestamps are separate from this ring buffer and persist in the config file.
 
 ## Behavior and safety
 
@@ -112,7 +120,8 @@ The web UI keeps the most recent **100** check entries in memory (`maxCheckLogs`
 - Only updates services that are currently running, have `image:`, and do not have `build:`.
 - Auto-detects the Compose implementation: `docker compose` (v2) is preferred, falling back to `docker-compose` (v1). Force one with `PREFER_COMPOSE=v1|v2`.
 - Scheduled scans process up to 4 projects concurrently (`maxParallelProjects` in `main.go`); Compose itself pulls a project's images in parallel. The updater's own project is always updated last so its container recreation does not interrupt other pulls.
-- Records each running container's image ID, runs `compose pull <eligible services>`, then **only recreates services whose image ID actually changed**. Unchanged services are left untouched and the project is reported as "images unchanged, nothing to recreate".
+- Records each running container's image ID, runs `compose pull <eligible services>` (or, with an active image proxy, pulls each image through the proxy and re-tags it), then **only recreates services whose image ID actually changed**. Unchanged services are left untouched and the project is reported as "images unchanged, nothing to recreate".
+- Image proxying is a client-side prefix rewrite, not a Docker daemon `registry-mirrors` change: nothing outside the updater is reconfigured, and `docker compose`/`docker pull` run by other tools are unaffected. Services with a `build:` section keep their local images and are skipped, matching `compose pull`.
 - Recreates via `compose up -d --no-deps --no-build [--wait] <changed services>` when `AUTO_UPDATE=true`. `--wait` is added only on v2 (v1 has no `--wait`).
 - Automated scans never call `docker rm`, `docker compose down`, `--remove-orphans`, or `docker stop`. The only `docker stop`/`restart` calls come from explicit user-triggered lifecycle buttons on standalone containers.
 - Does not update standalone containers (no image pull/recreate); only their start/stop/restart is exposed, plus conversion to Compose.

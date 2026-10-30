@@ -46,6 +46,8 @@ type webState struct {
 	NextRun     string            `json:"next_run,omitempty"`
 	LastRun     string            `json:"last_run,omitempty"`
 	ScanError   string            `json:"scan_error,omitempty"`
+	Proxies     []string          `json:"proxies"`
+	ActiveProxy string            `json:"active_proxy,omitempty"`
 }
 
 // startWeb runs the HTTP management UI until the process exits. Set WEB_ADDR to
@@ -178,6 +180,68 @@ func startWeb(u *updater, addr string) {
 			go u.runManualCheck(p)
 		}
 		writeJSON(w, map[string]any{"status": "started", "started": started, "skipped": skipped})
+	})
+
+	// Cancel a running check or lifecycle action.
+	mux.HandleFunc("/api/cancel", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var body struct {
+			File string `json:"file"`
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		file := strings.TrimSpace(body.File)
+		if file == "" {
+			http.Error(w, "file is required", http.StatusBadRequest)
+			return
+		}
+		if !u.cancelTask(file) {
+			http.Error(w, "nothing is running for this project", http.StatusConflict)
+			return
+		}
+		writeJSON(w, map[string]string{"status": "cancelling"})
+	})
+
+	// Manage image proxy prefixes: add, remove, or activate one.
+	mux.HandleFunc("/api/proxy", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var body struct {
+			URL    string `json:"url"`
+			Action string `json:"action"`
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		var err error
+		switch strings.ToLower(strings.TrimSpace(body.Action)) {
+		case "add":
+			err = u.cfg.AddImageProxy(body.URL)
+		case "remove":
+			err = u.cfg.RemoveImageProxy(body.URL)
+		case "activate":
+			err = u.cfg.SetActiveImageProxy(body.URL)
+		case "deactivate":
+			err = u.cfg.SetActiveImageProxy("")
+		default:
+			http.Error(w, "unsupported action", http.StatusBadRequest)
+			return
+		}
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, u.state())
 	})
 
 	// Read or save the primary compose file of a known project.
@@ -621,7 +685,7 @@ func startWeb(u *updater, addr string) {
 			"restart":  "restarting…",
 			"recreate": "recreating…",
 		}[action]
-		if _, ok := u.startLogDetail(p, "manual", progress); !ok {
+		if _, ok := u.startLogDetail(p, "manual", action, progress); !ok {
 			writeJSON(w, map[string]string{"status": "already-running"})
 			return
 		}
@@ -689,11 +753,40 @@ func (u *updater) isBusy(file string) bool {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	for i := range u.logs {
-		if u.logs[i].File == file && u.logs[i].Status == "processing" {
+		if u.logs[i].File == file && (u.logs[i].Status == "processing" || u.logs[i].Status == "cancelling") {
 			return true
 		}
 	}
 	return false
+}
+
+// cancelTask asks the operation running for the given key to stop. It returns
+// false when nothing is running, so the API can report a stale request.
+func (u *updater) cancelTask(key string) bool {
+	u.mu.Lock()
+	task, ok := u.tasks[key]
+	if !ok {
+		u.mu.Unlock()
+		return false
+	}
+	for i := range u.logs {
+		if u.logs[i].File == key && u.logs[i].Status == "processing" {
+			u.logs[i].Status = "cancelling"
+			u.logs[i].Detail = "cancelling…"
+			break
+		}
+	}
+	for i := range u.lastResults {
+		if u.lastResults[i].File == key && u.lastResults[i].Status == "processing" {
+			u.lastResults[i].Status = "cancelling"
+			u.lastResults[i].Detail = "cancelling…"
+			break
+		}
+	}
+	u.mu.Unlock()
+	log.Printf("cancel requested for %s", key)
+	task.cancel()
+	return true
 }
 
 // actionArgs maps a lifecycle action to its Compose subcommand. Recreate runs
@@ -716,15 +809,29 @@ func actionArgs(action string, wait bool) (string, []string, bool) {
 // runAction starts, stops, restarts, or recreates a project and records the
 // outcome like a manual check. startLog has already marked it as running.
 func (u *updater) runAction(p composeProject, action string) {
-	ctx, cancel := context.WithTimeout(context.Background(), u.timeout())
-	defer cancel()
+	ctx := u.taskContext(p.Key())
 	dir := p.WorkingDir
 	if dir == "" {
 		dir = filepath.Dir(p.File)
 	}
+	// fail ends the action with an error, or as cancelled when the user stopped
+	// it from the web UI.
+	fail := func(detail string) {
+		res := nowResult(p, u.cfg.ProjectEnabled(p.Key()))
+		res.Trigger = "manual"
+		res.Action = action
+		if ctx.Err() != nil {
+			res.Status, res.Detail = "cancelled", "cancelled by user"
+		} else {
+			res.Status, res.Detail = "failed", detail
+		}
+		u.finishLog(res)
+		u.recordResult(res)
+		log.Printf("[manual] %s -> %s%s", p.Key(), res.Status, detailSuffix(res.Detail))
+	}
 	sub, extra, ok := actionArgs(action, u.compose.supports)
 	if !ok {
-		log.Printf("[manual] %s: unsupported action %q", p.Key(), action)
+		fail(fmt.Sprintf("unsupported action %q", action))
 		return
 	}
 	var argv []string
@@ -746,7 +853,7 @@ func (u *updater) runAction(p composeProject, action string) {
 		dir = ""
 		argv = []string{"docker", sub, p.Project}
 	} else {
-		log.Printf("[manual] %s: action %q is not available for standalone containers", p.Key(), action)
+		fail(fmt.Sprintf("action %q is not available for standalone containers", action))
 		return
 	}
 	out, err := u.runCmdStream(ctx, dir, argv, func(line string) {
@@ -754,9 +861,14 @@ func (u *updater) runAction(p composeProject, action string) {
 	})
 	res := nowResult(p, u.cfg.ProjectEnabled(p.Key()))
 	res.Trigger = "manual"
+	res.Action = action
 	if err != nil {
-		res.Status = "failed"
-		res.Detail = action + " failed: " + err.Error()
+		if ctx.Err() != nil {
+			res.Status, res.Detail = "cancelled", "cancelled by user"
+		} else {
+			res.Status = "failed"
+			res.Detail = action + " failed: " + err.Error()
+		}
 	} else {
 		switch action {
 		case "start":
@@ -1038,29 +1150,33 @@ func (u *updater) recordResult(res projectResult) {
 // progress (so callers can skip the duplicate). The start time is also written
 // into the current result so the "last check" column updates immediately.
 func (u *updater) startLog(p composeProject, trigger string) (time.Time, bool) {
-	return u.startLogDetail(p, trigger, "checking…")
+	return u.startLogDetail(p, trigger, "check", "checking…")
 }
 
-// startLogDetail is startLog with a custom in-progress message, used by
-// lifecycle actions (starting/stopping/restarting).
-func (u *updater) startLogDetail(p composeProject, trigger, detail string) (time.Time, bool) {
+// startLogDetail is startLog with an explicit action and in-progress message,
+// used by lifecycle actions (starting/stopping/restarting).
+func (u *updater) startLogDetail(p composeProject, trigger, action, detail string) (time.Time, bool) {
 	now := time.Now()
 	entry := checkLog{
-		When:    now.Format(time.RFC3339),
-		Trigger: trigger,
-		Project: p.Project,
-		File:    p.File,
-		Status:  "processing",
-		Detail:  detail,
+		When:      now.Format(time.RFC3339),
+		Trigger:   trigger,
+		Project:   p.Project,
+		File:      p.File,
+		Status:    "processing",
+		Detail:    detail,
+		Action:    action,
+		startedAt: now,
 	}
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	for i := range u.logs {
-		if u.logs[i].File == p.File && u.logs[i].Status == "processing" {
+		if u.logs[i].File == p.File && (u.logs[i].Status == "processing" || u.logs[i].Status == "cancelling") {
 			log.Printf("[%s] %s already being checked; ignoring duplicate trigger", trigger, p.Project)
 			return time.Time{}, false
 		}
 	}
+	// Register a cancellable context for this operation so the UI can stop it.
+	u.newTaskContext(p.File)
 	u.logs = append([]checkLog{entry}, u.logs...)
 	if len(u.logs) > maxCheckLogs {
 		u.logs = u.logs[:maxCheckLogs]
@@ -1077,6 +1193,7 @@ func (u *updater) startLogDetail(p composeProject, trigger, detail string) (time
 		When:      now.Format(time.RFC3339),
 		UpdatedAt: u.cfg.LastUpdate(p.File),
 		Trigger:   trigger,
+		Action:    action,
 	}
 	replaced := false
 	for i := range u.lastResults {
@@ -1128,24 +1245,38 @@ func (u *updater) finishLog(res projectResult) {
 		File:    res.File,
 		Status:  res.Status,
 		Detail:  res.Detail,
+		Action:  res.Action,
 	}
 	u.mu.Lock()
+	cancel := u.dropTask(res.File)
 	replaced := false
 	for i := range u.logs {
-		if u.logs[i].File == res.File && u.logs[i].Status == "processing" {
+		if u.logs[i].File == res.File && (u.logs[i].Status == "processing" || u.logs[i].Status == "cancelling") {
+			if !u.logs[i].startedAt.IsZero() {
+				entry.DurationMs = time.Since(u.logs[i].startedAt).Milliseconds()
+			}
 			u.logs[i] = entry
 			replaced = true
 			break
 		}
 	}
 	if !replaced {
+		if entry.When != "" {
+			if started, err := time.Parse(time.RFC3339, entry.When); err == nil {
+				entry.DurationMs = time.Since(started).Milliseconds()
+			}
+		}
 		u.logs = append([]checkLog{entry}, u.logs...)
 		if len(u.logs) > maxCheckLogs {
 			u.logs = u.logs[:maxCheckLogs]
 		}
 	}
 	u.mu.Unlock()
-	log.Printf("[%s] %s -> %s%s", entry.Trigger, entry.Project, entry.Status, detailSuffix(entry.Detail))
+	if cancel != nil {
+		cancel()
+	}
+	log.Printf("[%s] %s -> %s in %s%s", entry.Trigger, entry.Project, entry.Status,
+		time.Duration(entry.DurationMs)*time.Millisecond, detailSuffix(entry.Detail))
 }
 
 func detailSuffix(d string) string {
@@ -1172,6 +1303,8 @@ func (u *updater) state() webState {
 	for k, v := range u.cfg.LastUpdates {
 		lastUpdates[k] = v
 	}
+	proxies := append([]string{}, u.cfg.ImageProxies...)
+	activeProxy := u.cfg.ActiveProxy
 	u.cfg.mu.Unlock()
 
 	u.mu.Lock()
@@ -1192,6 +1325,8 @@ func (u *updater) state() webState {
 		LastUpdates: lastUpdates,
 		Compose:     u.compose.display,
 		Running:     running,
+		Proxies:     proxies,
+		ActiveProxy: activeProxy,
 	}
 	if err != nil {
 		st.ScanError = err.Error()

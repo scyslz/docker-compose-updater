@@ -36,6 +36,16 @@ type updater struct {
 	nextRun     time.Time
 	lastResults []projectResult
 	logs        []checkLog
+	// tasks holds the cancellable context of every in-progress check or
+	// lifecycle action, keyed by the project's log key (compose file path or
+	// "container:<name>"). It lets the UI cancel a running operation.
+	tasks map[string]*runningTask
+}
+
+// runningTask is the cancellable context for one in-progress operation.
+type runningTask struct {
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 // projectResult is the outcome of processing one compose file, surfaced to the
@@ -54,7 +64,11 @@ type projectResult struct {
 	// file and carried across checks that did not update anything.
 	UpdatedAt string `json:"updated_at,omitempty"`
 	Trigger   string `json:"trigger,omitempty"` // "manual" or "cron"
-	logged    bool   // internal: whether this result should appear in the check log
+	// Action is the operation that produced this result (check, start, stop,
+	// restart, recreate). The UI uses it to turn the triggering button into a
+	// Cancel button while the operation runs.
+	Action string `json:"action,omitempty"`
+	logged bool   // internal: whether this result should appear in the check log
 }
 
 // checkLog is a single historical check event shown in the web UI.
@@ -63,8 +77,19 @@ type checkLog struct {
 	Trigger string `json:"trigger"` // "manual" or "cron"
 	Project string `json:"project"`
 	File    string `json:"file"`
-	Status  string `json:"status"` // running, updated, unchanged, skipped, unmounted, pulled, failed
+	Status  string `json:"status"` // processing, updated, unchanged, skipped, unmounted, pulled, failed, cancelled
 	Detail  string `json:"detail,omitempty"`
+	// DurationMs is how long the operation took. It stays 0 while the entry is
+	// still processing; the UI then shows a live counter based on When.
+	DurationMs int64 `json:"duration_ms"`
+
+	// Action is the operation being performed (check, start, stop, restart,
+	// recreate), so the UI can show Cancel on the button that started it.
+	Action string `json:"action,omitempty"`
+
+	// startedAt is the wall-clock start used to compute DurationMs. It is not
+	// serialized.
+	startedAt time.Time
 }
 
 // composeCommand describes how to invoke Compose on this host. It supports
@@ -391,6 +416,47 @@ func (u *updater) setNextRun(t time.Time) {
 	u.mu.Unlock()
 }
 
+// taskContext returns the cancellable context registered for an in-progress
+// operation. When none is registered (a runner invoked directly, as in tests),
+// a fresh one is created so the operation can still be cancelled.
+func (u *updater) taskContext(key string) context.Context {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if t, ok := u.tasks[key]; ok {
+		return t.ctx
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	if u.tasks == nil {
+		u.tasks = map[string]*runningTask{}
+	}
+	u.tasks[key] = &runningTask{ctx: ctx, cancel: cancel}
+	return ctx
+}
+
+// newTaskContext starts a cancellable context for a new operation and replaces
+// any task already registered under the same key. The caller must hold u.mu.
+func (u *updater) newTaskContext(key string) context.Context {
+	if u.tasks == nil {
+		u.tasks = map[string]*runningTask{}
+	}
+	if old, ok := u.tasks[key]; ok {
+		old.cancel()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	u.tasks[key] = &runningTask{ctx: ctx, cancel: cancel}
+	return ctx
+}
+
+// dropTask forgets the task registered for key and returns its cancel func so
+// the caller can invoke it outside the mutex.
+func (u *updater) dropTask(key string) context.CancelFunc {
+	if t, ok := u.tasks[key]; ok {
+		delete(u.tasks, key)
+		return t.cancel
+	}
+	return nil
+}
+
 // maxParallelProjects caps how many projects are pulled/updated at the same
 // time during a scheduled scan. Each project's `compose pull` already pulls its
 // images concurrently; this cap bounds the number of independent Compose
@@ -544,6 +610,7 @@ func (u *updater) processProject(p composeProject, forced bool, trigger string) 
 func (u *updater) process(p composeProject, enabled, autoUpdate bool, trigger string) projectResult {
 	res := nowResult(p, enabled)
 	res.Trigger = trigger
+	res.Action = "check"
 	res.logged = true
 	// Keep the start time recorded when this check began (from startLog) so the
 	// "last check" column reflects the start, not the completion.
@@ -566,30 +633,33 @@ func (u *updater) process(p composeProject, enabled, autoUpdate bool, trigger st
 	if dir == "" {
 		dir = filepath.Dir(file)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), u.timeout())
-	defer cancel()
+	ctx := u.taskContext(p.Key())
+	// fail records a failed step, or a cancellation when the user stopped this
+	// operation from the web UI (the context is cancelled in that case).
+	fail := func(detail string) projectResult {
+		if ctx.Err() != nil {
+			res.Status, res.Detail = "cancelled", "cancelled by user"
+			return res
+		}
+		res.Status, res.Detail = "failed", detail
+		log.Printf("%s: %s", p.Key(), detail)
+		return res
+	}
 	log.Printf("project: %s (%s)", p.Project, file)
 	configOut, err := u.runCmd(ctx, dir, u.compose.withProjectFile(p.Project, file, "config", "--format", "json"))
 	if err != nil {
-		res.Status, res.Detail = "failed", "compose config failed: "+err.Error()
-		log.Printf("skip %s: %v", p.Key(), res.Detail)
-		return res
+		return fail("compose config failed: " + err.Error())
 	}
 	var cfg composeConfig
 	if err := json.Unmarshal(configOut, &cfg); err != nil {
-		res.Status, res.Detail = "failed", "cannot parse compose config: "+err.Error()
-		log.Printf("skip %s: %v", p.Key(), res.Detail)
-		return res
+		return fail("cannot parse compose config: " + err.Error())
 	}
 	// Pull current images for the whole project. Compose skips services that have
-	// no registry image (build-only), so there is no need to enumerate services.
+	// no registry image (build-only), so the image list is derived from the
+	// resolved config instead of enumerating services manually.
 	u.progressLog(p.Key(), "pulling…")
-	if _, err := u.runCmdStream(ctx, dir, u.compose.withProjectFile(p.Project, file, "pull"), func(line string) {
-		u.progressLog(p.Key(), "pulling: "+line)
-	}); err != nil {
-		res.Status, res.Detail = "failed", "pull failed: "+err.Error()
-		log.Printf("pull failed for %s: %v", p.Key(), err)
-		return res
+	if err := u.pullProjectImages(ctx, p, dir, projectImages(cfg)); err != nil {
+		return fail("pull failed: " + err.Error())
 	}
 
 	upArgs := []string{"-d", "--no-build"}
@@ -604,9 +674,7 @@ func (u *updater) process(p composeProject, enabled, autoUpdate bool, trigger st
 		if _, err := u.runCmdStream(ctx, dir, u.compose.withProjectFile(p.Project, file, "up", upArgs...), func(line string) {
 			u.progressLog(p.Key(), line)
 		}); err != nil {
-			res.Status, res.Detail = "failed", "start failed: "+err.Error()
-			log.Printf("START FAILED for stopped %s: %v", p.Key(), err)
-			return res
+			return fail("start failed: " + err.Error())
 		}
 		res = u.markUpdated(res, "started", "stopped project: pulled and started")
 		log.Printf("pulled and started stopped project %s", p.Key())
@@ -625,15 +693,21 @@ func (u *updater) process(p composeProject, enabled, autoUpdate bool, trigger st
 	// whether anything would actually change; otherwise every check would report
 	// a successful "updated" even when the container is already current.
 	if u.projectIsSelf(ctx, p.Project) {
+		if err := ctx.Err(); err != nil {
+			return fail("self-update cancelled")
+		}
 		if !u.selfUpdatePending(ctx, dir, p.Project, file, upArgs) {
 			res.Status, res.Detail = "unchanged", "images unchanged, nothing to recreate"
 			log.Printf("%s: %v", p.Key(), res.Detail)
 			return res
 		}
+		// The helper is deliberately detached from this context so it survives
+		// our own recreation; honour an explicit cancel before launching it.
+		if err := ctx.Err(); err != nil {
+			return fail("self-update cancelled")
+		}
 		if err := u.selfUpdate(ctx, dir, p.Project, file, upArgs); err != nil {
-			res.Status, res.Detail = "failed", "self-update failed: "+err.Error()
-			log.Printf("SELF-UPDATE FAILED for %s: %v", p.Key(), err)
-			return res
+			return fail("self-update failed: " + err.Error())
 		}
 		res = u.markUpdated(res, "updated", "self-update started (detached)")
 		log.Printf("self-update started for %s", p.Key())
@@ -648,9 +722,7 @@ func (u *updater) process(p composeProject, enabled, autoUpdate bool, trigger st
 		upBuf.WriteString(line + "\n")
 		u.progressLog(p.Key(), line)
 	}); err != nil {
-		res.Status, res.Detail = "failed", "update failed: "+err.Error()
-		log.Printf("UPDATE FAILED for %s: %v", p.Key(), err)
-		return res
+		return fail("update failed: " + err.Error())
 	}
 	if strings.Contains(upBuf.String(), "Recreated") || strings.Contains(upBuf.String(), "Created") {
 		res = u.markUpdated(res, "updated", "recreated changed services")
@@ -707,6 +779,53 @@ func normalizeImageID(id string) string {
 func (u *updater) runDocker(parent context.Context, dir string, args []string) ([]byte, error) {
 	argv := append([]string{"docker"}, args...)
 	return u.runCmd(parent, dir, argv)
+}
+
+// pullProjectImages refreshes the project's images. Without an active proxy it
+// runs `compose pull`, exactly like before. With a proxy it pulls each image
+// through the proxy prefix and re-tags it under the name the compose file uses,
+// so `compose up` reuses the freshly pulled layers. A failed proxied pull falls
+// back to a direct pull (or a direct `compose pull`), keeping private registries
+// and digest-pinned images working.
+func (u *updater) pullProjectImages(ctx context.Context, p composeProject, dir string, images []string) error {
+	progress := func(line string) { u.progressLog(p.Key(), "pulling: "+line) }
+	composePull := func() error {
+		_, err := u.runCmdStream(ctx, dir, u.compose.withProjectFile(p.Project, p.File, "pull"), progress)
+		return err
+	}
+
+	proxy := u.cfg.ActiveImageProxy()
+	if proxy == "" || len(images) == 0 {
+		return composePull()
+	}
+	for _, image := range images {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		proxied := proxiedImageRef(proxy, image)
+		if proxied == image {
+			// Not proxyable (digest-pinned or already accelerated).
+			if _, err := u.runCmdStream(ctx, dir, []string{"docker", "pull", image}, progress); err != nil {
+				return err
+			}
+			continue
+		}
+		u.progressLog(p.Key(), "pulling via proxy: "+proxied)
+		if _, err := u.runCmdStream(ctx, dir, []string{"docker", "pull", proxied}, progress); err != nil {
+			if ctx.Err() != nil {
+				return err
+			}
+			u.progressLog(p.Key(), "proxy pull failed, retrying directly: "+image)
+			if _, err := u.runCmdStream(ctx, dir, []string{"docker", "pull", image}, progress); err != nil {
+				return err
+			}
+			continue
+		}
+		if _, err := u.runCmd(ctx, dir, []string{"docker", "tag", proxied, image}); err != nil {
+			return fmt.Errorf("tag %s as %s: %w", proxied, image, err)
+		}
+	}
+	return nil
 }
 
 // hasBuild reports whether a compose service defines a build section. It
